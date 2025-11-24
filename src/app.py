@@ -1,0 +1,961 @@
+import os
+import tkinter as tk
+from tkinter import filedialog, messagebox, simpledialog
+from PIL import Image, ImageTk
+from src.utils import load_classes, natural_sort_key, parse_yolo, save_yolo, denormalize_box, normalize_box, load_config, save_config
+from src.ui_components import DarkButton, DarkLabel, DarkListbox, DarkFrame, SectionLabel, SidebarFrame, THEME
+import tkinter.simpledialog as simpledialog
+
+class AnnotationApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("AnnotationTool - Eclipse Theme")
+        self.root.geometry("1400x800")
+        self.root.configure(bg=THEME['bg_main'])
+        
+        # State
+        self.image_dir = ""
+        self.output_dir = ""
+        self.image_list = []
+        self.current_image_index = -1
+        self.current_image = None # PIL Image
+        self.tk_image = None # ImageTk
+        self.scale = 1.0
+        self.offset_x = 0
+        self.offset_y = 0
+        self.zoom_factor = 1.0
+
+        self.config = load_config("config.json")
+        self.classes = load_classes("data/predefined_classes.txt") # List of dicts
+        self.current_class_index = -1 # Idle state by default
+        self.template_mode = False # If True, next draw defines template size
+        
+        self.boxes = [] # List of dicts (normalized)
+        self.selected_indices = set() # Set of ints
+        self.clipboard = []
+        
+        self.is_drawing = False
+        self.start_x = 0
+        self.start_y = 0
+        
+        self.resize_mode = False
+        self.resize_handle = None # 'nw', 'ne', 'sw', 'se'
+        self.resize_box_index = -1
+        
+        self.move_mode = False
+        self.move_box_index = -1
+        
+        self.auto_save = tk.BooleanVar(value=True)
+        self.show_labels = tk.BooleanVar(value=True)
+        self.show_right_sidebar = tk.BooleanVar(value=True)
+        
+        # UI Setup
+        self.setup_ui()
+        self.bind_events()
+        
+    def setup_ui(self):
+        # Toolbar (Top) for toggles
+        self.toolbar = DarkFrame(self.root, height=30)
+        self.toolbar.pack(fill=tk.X, side=tk.TOP)
+        
+        DarkButton(self.toolbar, text="Toggle Box List", command=self.toggle_right_sidebar).pack(side=tk.RIGHT, padx=5, pady=2)
+        
+        # Main Layout: Sidebar (Left) + Canvas Area (Center) + Sidebar (Right)
+        self.main_container = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, bg=THEME['bg_main'], sashwidth=4, sashrelief=tk.FLAT)
+        self.main_container.pack(fill=tk.BOTH, expand=True)
+        
+        # Left Sidebar
+        self.sidebar = SidebarFrame(self.main_container, width=250)
+        self.main_container.add(self.sidebar, minsize=200)
+        
+        # Canvas Area
+        self.canvas_frame = DarkFrame(self.main_container)
+        self.main_container.add(self.canvas_frame, minsize=400, stretch="always")
+        
+        # Right Sidebar
+        self.right_sidebar = SidebarFrame(self.main_container, width=250)
+        self.main_container.add(self.right_sidebar, minsize=200)
+        
+        self.setup_sidebar()
+        self.setup_canvas()
+        self.setup_right_sidebar()
+        
+    def setup_sidebar(self):
+        # Project Section
+        SectionLabel(self.sidebar, text="Project").pack(fill=tk.X, padx=10, pady=(10, 0))
+        
+        btn_frame = DarkFrame(self.sidebar, bg=THEME['bg_sidebar'])
+        btn_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        DarkButton(btn_frame, text="Open Images", command=self.select_image_dir).pack(fill=tk.X, pady=2)
+        DarkButton(btn_frame, text="Set Output Dir", command=self.select_output_dir).pack(fill=tk.X, pady=2)
+        
+        self.dir_label = DarkLabel(self.sidebar, text="No directory selected", bg=THEME['bg_sidebar'], fg=THEME['fg_text'], wraplength=230)
+        self.dir_label.pack(fill=tk.X, padx=10, pady=5)
+        
+        # Classes Section
+        SectionLabel(self.sidebar, text="Classes").pack(fill=tk.X, padx=10, pady=(10, 0))
+        
+        class_btn_frame = DarkFrame(self.sidebar, bg=THEME['bg_sidebar'])
+        class_btn_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        DarkButton(class_btn_frame, text="Create Template", command=self.enter_template_mode).pack(fill=tk.X, pady=2)
+        
+        self.class_listbox = DarkListbox(self.sidebar, height=10)
+        self.class_listbox.pack(fill=tk.X, padx=10, pady=5)
+        self.class_listbox.bind('<<ListboxSelect>>', self.on_class_select)
+        
+        self.update_class_list()
+        
+        # Tools Section
+        SectionLabel(self.sidebar, text="Tools").pack(fill=tk.X, padx=10, pady=(10, 0))
+        
+        DarkButton(self.sidebar, text="Copy Boxes (Ctrl+C)", command=self.copy_boxes).pack(fill=tk.X, padx=10, pady=2)
+        DarkButton(self.sidebar, text="Paste Boxes (Ctrl+V)", command=self.paste_boxes).pack(fill=tk.X, padx=10, pady=2)
+        
+        tk.Checkbutton(self.sidebar, text="Auto Save", variable=self.auto_save, 
+                       bg=THEME['bg_sidebar'], fg=THEME['fg_text'], selectcolor=THEME['bg_sidebar'], activebackground=THEME['bg_sidebar'], activeforeground=THEME['fg_highlight']).pack(anchor='w', padx=10, pady=5)
+        
+        tk.Checkbutton(self.sidebar, text="Show Labels", variable=self.show_labels, command=self.redraw_canvas,
+                       bg=THEME['bg_sidebar'], fg=THEME['fg_text'], selectcolor=THEME['bg_sidebar'], activebackground=THEME['bg_sidebar'], activeforeground=THEME['fg_highlight']).pack(anchor='w', padx=10, pady=5)
+
+        DarkButton(self.sidebar, text="Settings", command=self.open_settings_dialog).pack(fill=tk.X, padx=10, pady=(10, 2))
+
+        # File List
+        SectionLabel(self.sidebar, text="Files").pack(fill=tk.X, padx=10, pady=(10, 0))
+        self.file_listbox = DarkListbox(self.sidebar, height=15)
+        self.file_listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        self.file_listbox.bind('<<ListboxSelect>>', self.on_file_select)
+
+    def setup_right_sidebar(self):
+        SectionLabel(self.right_sidebar, text="Box Labels").pack(fill=tk.X, padx=10, pady=(10, 0))
+        
+        self.box_listbox = DarkListbox(self.right_sidebar, selectmode=tk.EXTENDED)
+        self.box_listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        self.box_listbox.bind('<<ListboxSelect>>', self.on_box_list_select)
+
+    def toggle_right_sidebar(self):
+        if self.show_right_sidebar.get():
+            self.main_container.remove(self.right_sidebar)
+            self.show_right_sidebar.set(False)
+        else:
+            self.main_container.add(self.right_sidebar, minsize=200)
+            self.show_right_sidebar.set(True)
+
+    def setup_canvas(self):
+        # Canvas Frame needs grid layout for scrollbars
+        self.canvas_frame.grid_rowconfigure(0, weight=1)
+        self.canvas_frame.grid_columnconfigure(0, weight=1)
+        
+        self.canvas = tk.Canvas(self.canvas_frame, bg="#111111", highlightthickness=0)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        
+        # Scrollbars
+        self.v_scroll = tk.Scrollbar(self.canvas_frame, orient=tk.VERTICAL, command=self.canvas.yview)
+        self.v_scroll.grid(row=0, column=1, sticky="ns")
+        
+        self.h_scroll = tk.Scrollbar(self.canvas_frame, orient=tk.HORIZONTAL, command=self.canvas.xview)
+        self.h_scroll.grid(row=1, column=0, sticky="ew")
+        
+        self.canvas.configure(yscrollcommand=self.v_scroll.set, xscrollcommand=self.h_scroll.set)
+        
+        self.canvas.bind("<Button-1>", self.on_canvas_click)
+        self.canvas.bind("<B1-Motion>", self.on_canvas_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_canvas_release)
+        self.canvas.bind("<Configure>", self.on_canvas_resize)
+        
+        # Zoom & Pan
+        self.canvas.bind("<Control-MouseWheel>", self.on_zoom)
+        self.canvas.bind("<Button-2>", self.start_pan)
+        self.canvas.bind("<B2-Motion>", self.pan_image)
+        
+        # Keyboard focus
+        self.canvas.bind("<Button-1>", lambda e: self.canvas.focus_set(), add="+")
+
+    def bind_events(self):
+        self.root.bind(self.config['prev_image'], lambda e: self.prev_image())
+        self.root.bind(self.config['next_image'], lambda e: self.next_image())
+        self.root.bind(self.config['cycle_class'], lambda e: self.cycle_class())
+        self.root.bind(self.config['delete_box'], lambda e: self.delete_selected_box())
+        self.root.bind(self.config['copy'], lambda e: self.copy_boxes())
+        self.root.bind(self.config['paste'], lambda e: self.paste_boxes())
+        self.root.bind(self.config['edit_class'], lambda e: self.edit_selected_box_class())
+        self.root.bind(self.config['deselect'], lambda e: self.deselect_class())
+        
+        # Keep arrow keys as hardcoded navigation alternatives or add to config?
+        # Let's keep them as hardcoded secondary options for now, or just rely on config.
+        # User asked for configurable shortcuts, so let's stick to config primarily.
+        # But Left/Right are standard. Let's leave them.
+        self.root.bind("<Left>", lambda e: self.prev_image())
+        self.root.bind("<Right>", lambda e: self.next_image())
+
+    def deselect_class(self):
+        self.current_class_index = -1
+        self.class_listbox.selection_clear(0, tk.END)
+        self.template_mode = False
+        messagebox.showinfo("Info", "Idle Mode: Class deselected.")
+
+    def open_settings_dialog(self):
+        top = tk.Toplevel(self.root)
+        top.title("Settings - Keybindings")
+        top.geometry("400x500")
+        top.configure(bg=THEME['bg_main'])
+        
+        # Title
+        DarkLabel(top, text="Configure Keybindings", font=("Segoe UI", 12, "bold")).pack(pady=10)
+        
+        # Scrollable Frame for keys
+        canvas = tk.Canvas(top, bg=THEME['bg_main'], highlightthickness=0)
+        scrollbar = tk.Scrollbar(top, orient="vertical", command=canvas.yview)
+        scrollable_frame = DarkFrame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True, padx=10)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Key Entries
+        self.key_entries = {}
+        row = 0
+        for action, key in self.config.items():
+            DarkLabel(scrollable_frame, text=action.replace("_", " ").title()).grid(row=row, column=0, sticky="w", pady=5, padx=5)
+            
+            btn = DarkButton(scrollable_frame, text=key, width=15)
+            btn.grid(row=row, column=1, sticky="e", pady=5, padx=5)
+            btn.configure(command=lambda b=btn, a=action: self.capture_key(b, a))
+            
+            row += 1
+            
+        # Save Button
+        DarkButton(top, text="Save & Close", command=lambda: self.save_settings(top)).pack(pady=10)
+
+    def capture_key(self, button, action):
+        button.config(text="Press any key...")
+        
+        def on_key(event):
+            # Convert event to string representation
+            # This is tricky for all keys, but let's try basic ones
+            keysym = event.keysym
+            state = event.state
+            
+            # Construct key string
+            key_str = ""
+            if state & 4: key_str += "Control-"
+            if state & 1: key_str += "Shift-"
+            if state & 8: key_str += "Alt-"
+            
+            # Handle special keys
+            if len(keysym) > 1:
+                key_str += f"<{keysym}>"
+            else:
+                key_str += keysym
+                if len(key_str) == 1: # Single char
+                     key_str = f"<{key_str}>" # Wrap in brackets for consistency usually? No, standard bind uses <char> for special, char for normal.
+                     # Actually, standard bind:
+                     # <Control-c>
+                     # <a>
+                     # <Return>
+                     # Let's wrap everything in <> for simplicity if it works, or follow Tkinter patterns.
+                     # Tkinter patterns: <Key-a>, <a>, <Control-c>, <Shift-A>
+                     pass
+
+            # Simplified: just use event.keysym and modifiers
+            # Better approach:
+            if event.state & 0x0004: # Control
+                new_key = f"<Control-{event.keysym.lower()}>"
+            elif event.state & 0x0001: # Shift
+                new_key = f"<Shift-{event.keysym}>"
+            elif event.state & 0x0008: # Alt
+                new_key = f"<Alt-{event.keysym.lower()}>"
+            else:
+                if len(event.keysym) > 1:
+                    new_key = f"<{event.keysym}>"
+                else:
+                    new_key = f"<{event.keysym}>"
+            
+            self.config[action] = new_key
+            button.config(text=new_key)
+            
+            # Unbind
+            self.root.unbind_all("<Key>") # This might be too aggressive?
+            # We only bound to this button? No, we need to bind to root to capture
+            self.settings_capture_window.destroy()
+
+        # Create a transparent overlay or just bind to top window?
+        # Let's bind to the button itself or the top window
+        # But we need to grab focus
+        
+        # Easier: Simple dialog asking to press key
+        # But we want inline.
+        
+        # Let's use a capture dialog
+        cap = tk.Toplevel(self.root)
+        cap.title("Press Key")
+        cap.geometry("200x100")
+        DarkLabel(cap, text=f"Press key for '{action}'...").pack(expand=True)
+        
+        self.settings_capture_window = cap
+        
+        cap.bind("<Key>", on_key)
+        cap.focus_set()
+
+    def save_settings(self, window):
+        save_config("config.json", self.config)
+        self.bind_events() # Rebind
+        window.destroy()
+        messagebox.showinfo("Settings", "Keybindings saved!")
+
+    # --- Project Management ---
+    def select_image_dir(self):
+        path = filedialog.askdirectory(title="Select Image Directory")
+        if path:
+            self.image_dir = path
+            self.load_images()
+            if not self.output_dir:
+                self.output_dir = path # Default output to same dir
+            self.update_dir_label()
+
+    def select_output_dir(self):
+        path = filedialog.askdirectory(title="Select Output Directory")
+        if path:
+            self.output_dir = path
+            self.update_dir_label()
+
+    def update_dir_label(self):
+        text = f"Img: {os.path.basename(self.image_dir)}\nOut: {os.path.basename(self.output_dir)}"
+        self.dir_label.config(text=text)
+
+    def load_images(self):
+        self.image_list = []
+        extensions = ('.jpg', '.jpeg', '.png', '.bmp')
+        for f in os.listdir(self.image_dir):
+            if f.lower().endswith(extensions):
+                self.image_list.append(f)
+        
+        self.image_list.sort(key=natural_sort_key)
+        
+        self.file_listbox.delete(0, tk.END)
+        for f in self.image_list:
+            self.file_listbox.insert(tk.END, f)
+            
+        if self.image_list:
+            self.load_image(0)
+        else:
+            messagebox.showinfo("Info", "No images found in directory.")
+
+    # --- Image Loading & Saving ---
+    def load_image(self, index):
+        if 0 <= index < len(self.image_list):
+            # Auto save previous
+            if self.current_image_index != -1 and self.auto_save.get():
+                self.save_annotations()
+
+            self.current_image_index = index
+            self.file_listbox.selection_clear(0, tk.END)
+            self.file_listbox.selection_set(index)
+            self.file_listbox.see(index)
+            
+            filename = self.image_list[index]
+            path = os.path.join(self.image_dir, filename)
+            
+            try:
+                self.current_image = Image.open(path)
+                self.load_annotations(filename)
+                self.redraw_canvas()
+                self.update_box_list()
+                self.root.title(f"AnnotationTool - {filename} [{index+1}/{len(self.image_list)}]")
+            except Exception as e:
+                print(f"Error loading image: {e}")
+
+    def load_annotations(self, filename):
+        self.boxes = []
+        self.selected_indices = set()
+        if not self.output_dir:
+            return
+            
+        name, _ = os.path.splitext(filename)
+        txt_path = os.path.join(self.output_dir, name + ".txt")
+        
+        if os.path.exists(txt_path):
+            w, h = self.current_image.size
+            self.boxes = parse_yolo(txt_path, w, h) # Returns normalized boxes
+
+    def save_annotations(self):
+        if self.current_image_index == -1 or not self.output_dir:
+            return
+            
+        filename = self.image_list[self.current_image_index]
+        name, _ = os.path.splitext(filename)
+        txt_path = os.path.join(self.output_dir, name + ".txt")
+        
+        # Filter boxes to ensure valid classes
+        valid_boxes = [b for b in self.boxes if any(c['id'] == b['class_id'] for c in self.classes) or b['class_id'] == -1]
+        
+        # Only save if we have boxes or file exists (to clear it)
+        if valid_boxes or os.path.exists(txt_path):
+             # We should probably filter out -1 (Unlabeled) before saving to YOLO?
+             # Standard YOLO doesn't support -1. Let's warn or skip?
+             # For now, let's skip -1 classes.
+             final_boxes = [b for b in valid_boxes if b['class_id'] != -1]
+             save_yolo(txt_path, final_boxes)
+
+    # --- Canvas Drawing ---
+    def redraw_canvas(self):
+        if not self.current_image:
+            return
+            
+        self.canvas.delete("all")
+        
+        # Calculate scale to fit
+        cw = self.canvas.winfo_width()
+        ch = self.canvas.winfo_height()
+        iw, ih = self.current_image.size
+        
+        if cw == 0 or ch == 0: return # Not ready yet
+        
+        scale_w = cw / iw
+        scale_h = ch / ih
+        base_scale = min(scale_w, scale_h)
+        
+        self.scale = base_scale * self.zoom_factor
+        
+        nw = int(iw * self.scale)
+        nh = int(ih * self.scale)
+        
+        # Update Scrollregion
+        self.canvas.configure(scrollregion=(0, 0, nw, nh))
+        
+        # Center image if smaller than canvas
+        if nw < cw:
+            self.offset_x = (cw - nw) // 2
+        else:
+            self.offset_x = 0
+            
+        if nh < ch:
+            self.offset_y = (ch - nh) // 2
+        else:
+            self.offset_y = 0
+        
+        resized = self.current_image.resize((nw, nh), Image.Resampling.LANCZOS)
+        self.tk_image = ImageTk.PhotoImage(resized)
+        
+        self.canvas.create_image(self.offset_x, self.offset_y, anchor=tk.NW, image=self.tk_image)
+        
+        # Draw boxes
+        for i, box in enumerate(self.boxes):
+            self.draw_box_on_canvas(box, i in self.selected_indices, i)
+            
+        # Sync Right Sidebar Selection
+        self.box_listbox.selection_clear(0, tk.END)
+        for i in self.selected_indices:
+            self.box_listbox.selection_set(i)
+
+    def draw_box_on_canvas(self, box, is_selected, index):
+        if not self.current_image: return
+        
+        iw, ih = self.current_image.size
+        x1, y1, x2, y2 = denormalize_box(box, iw, ih)
+        
+        # Scale to canvas
+        cx1 = x1 * self.scale + self.offset_x
+        cy1 = y1 * self.scale + self.offset_y
+        cx2 = x2 * self.scale + self.offset_x
+        cy2 = y2 * self.scale + self.offset_y
+        
+        class_info = next((c for c in self.classes if c['id'] == box['class_id']), None)
+        
+        if box['class_id'] == -1:
+            color = "#FFFFFF"
+            label_text = "Unlabeled"
+        else:
+            color = class_info['color'] if class_info else "#FFFFFF"
+            label_text = class_info['name'] if class_info else "Unknown"
+        
+        width = 3 if is_selected else 2
+        outline = "#FFFFFF" if is_selected else color
+        
+        # Draw Rect
+        self.canvas.create_rectangle(cx1, cy1, cx2, cy2, outline=outline, width=width, tags=f"box_{index}")
+        
+        # Draw Label
+        if self.show_labels.get():
+            # Draw text background
+            text_x = cx1
+            text_y = cy1 - 15
+            if text_y < 0: text_y = cy1 + 5
+            
+            self.canvas.create_text(text_x, text_y, text=label_text, fill=color, anchor=tk.SW, font=("Segoe UI", 9, "bold"))
+
+        # Draw Resize Handles if selected
+        if is_selected:
+            handle_size = 6
+            handles = [
+                (cx1, cy1, 'nw'), (cx2, cy1, 'ne'),
+                (cx1, cy2, 'sw'), (cx2, cy2, 'se')
+            ]
+            for hx, hy, tag in handles:
+                self.canvas.create_rectangle(
+                    hx - handle_size/2, hy - handle_size/2,
+                    hx + handle_size/2, hy + handle_size/2,
+                    fill="white", outline="black", tags=f"handle_{index}_{tag}"
+                )
+
+    def on_canvas_resize(self, event):
+        if self.current_image:
+            self.redraw_canvas()
+            
+    def on_zoom(self, event):
+        if not self.current_image: return
+        
+        if event.delta > 0:
+            self.zoom_factor *= 1.1
+        else:
+            self.zoom_factor /= 1.1
+            
+        # Clamp zoom
+        self.zoom_factor = max(0.1, min(self.zoom_factor, 10.0))
+        
+        self.redraw_canvas()
+        
+    def start_pan(self, event):
+        self.canvas.scan_mark(event.x, event.y)
+        
+    def pan_image(self, event):
+        self.canvas.scan_dragto(event.x, event.y, gain=1)
+
+    def on_canvas_click(self, event):
+        if not self.current_image: return
+        
+        # Adjust coordinates for scroll
+        canvas_x = self.canvas.canvasx(event.x)
+        canvas_y = self.canvas.canvasy(event.y)
+        
+        # Check for resize handles first
+        if len(self.selected_indices) == 1:
+            idx = list(self.selected_indices)[0]
+            # Check handles
+            item = self.canvas.find_closest(canvas_x, canvas_y, halo=5)
+            tags = self.canvas.gettags(item)
+            for tag in tags:
+                if tag.startswith(f"handle_{idx}_"):
+                    self.resize_mode = True
+                    self.resize_handle = tag.split('_')[-1]
+                    self.resize_box_index = idx
+                    self.start_x = canvas_x
+                    self.start_y = canvas_y
+                    return
+
+        # Check if clicked on a box
+        clicked_box_index = self.find_box_at(canvas_x, canvas_y)
+        
+        if clicked_box_index != -1:
+            # Simple click: Select only this one
+            self.selected_indices = {clicked_box_index}
+            
+            # Check if we should start moving (if already selected or just selected)
+            # If we clicked inside a box, we prepare for move
+            self.move_mode = True
+            self.move_box_index = clicked_box_index
+            self.start_x = canvas_x
+            self.start_y = canvas_y
+            
+            self.redraw_canvas()
+        else:
+            # IDLE CHECK: If no class selected, do nothing (or clear selection)
+            if self.current_class_index == -1:
+                self.selected_indices = set()
+                self.redraw_canvas()
+                return
+
+            # Start drawing
+            self.selected_indices = set()
+            self.is_drawing = True
+            self.start_x = canvas_x
+            self.start_y = canvas_y
+            self.redraw_canvas() # Clear selection
+
+    def on_canvas_drag(self, event):
+        # Adjust coordinates for scroll
+        canvas_x = self.canvas.canvasx(event.x)
+        canvas_y = self.canvas.canvasy(event.y)
+        
+        # Clamp to image boundaries
+        if self.current_image:
+            iw, ih = self.current_image.size
+            # Image boundaries in canvas coords
+            min_x = self.offset_x
+            min_y = self.offset_y
+            max_x = self.offset_x + (iw * self.scale)
+            max_y = self.offset_y + (ih * self.scale)
+            
+            canvas_x = max(min_x, min(max_x, canvas_x))
+            canvas_y = max(min_y, min(max_y, canvas_y))
+
+        if self.resize_mode:
+            # Handle resizing
+            box = self.boxes[self.resize_box_index]
+            iw, ih = self.current_image.size
+            x1, y1, x2, y2 = denormalize_box(box, iw, ih)
+            
+            # Convert event delta to image delta
+            dx = (canvas_x - self.start_x) / self.scale
+            dy = (canvas_y - self.start_y) / self.scale
+            
+            if self.resize_handle == 'nw':
+                x1 += dx; y1 += dy
+            elif self.resize_handle == 'ne':
+                x2 += dx; y1 += dy
+            elif self.resize_handle == 'sw':
+                x1 += dx; y2 += dy
+            elif self.resize_handle == 'se':
+                x2 += dx; y2 += dy
+                
+            # Clamp to [0, iw] and [0, ih]
+            x1 = max(0, min(iw, x1))
+            y1 = max(0, min(ih, y1))
+            x2 = max(0, min(iw, x2))
+            y2 = max(0, min(ih, y2))
+                
+            # Normalize and update
+            # Ensure x1 < x2, y1 < y2 logic handled by normalize_box
+            new_box = normalize_box(x1, y1, x2, y2, iw, ih)
+            new_box['class_id'] = box['class_id'] # Keep class
+            
+            self.boxes[self.resize_box_index] = new_box
+            
+            self.start_x = canvas_x
+            self.start_y = canvas_y
+            self.redraw_canvas()
+            return
+
+        if self.move_mode:
+            # Handle moving
+            box = self.boxes[self.move_box_index]
+            iw, ih = self.current_image.size
+            x1, y1, x2, y2 = denormalize_box(box, iw, ih)
+            
+            # Convert event delta to image delta
+            dx = (canvas_x - self.start_x) / self.scale
+            dy = (canvas_y - self.start_y) / self.scale
+            
+            # Update coords
+            x1 += dx
+            y1 += dy
+            x2 += dx
+            y2 += dy
+            
+            # Clamp to [0, iw] and [0, ih]
+            # We need to check width/height to ensure we don't collapse or go out
+            w = x2 - x1
+            h = y2 - y1
+            
+            if x1 < 0: x1 = 0; x2 = w
+            if y1 < 0: y1 = 0; y2 = h
+            if x2 > iw: x2 = iw; x1 = iw - w
+            if y2 > ih: y2 = ih; y1 = ih - h
+            
+            # Normalize and update
+            new_box = normalize_box(x1, y1, x2, y2, iw, ih)
+            new_box['class_id'] = box['class_id']
+            
+            self.boxes[self.move_box_index] = new_box
+            
+            self.start_x = canvas_x
+            self.start_y = canvas_y
+            self.redraw_canvas()
+            return
+
+        if self.is_drawing:
+            # Update temp rectangle
+            self.canvas.delete("temp_rect")
+            self.canvas.create_rectangle(self.start_x, self.start_y, canvas_x, canvas_y, outline="white", dash=(4, 4), tags="temp_rect")
+
+    def on_canvas_release(self, event):
+        # Adjust coordinates for scroll
+        canvas_x = self.canvas.canvasx(event.x)
+        canvas_y = self.canvas.canvasy(event.y)
+        
+        # Clamp to image boundaries
+        if self.current_image:
+            iw, ih = self.current_image.size
+            min_x = self.offset_x
+            min_y = self.offset_y
+            max_x = self.offset_x + (iw * self.scale)
+            max_y = self.offset_y + (ih * self.scale)
+            
+            canvas_x = max(min_x, min(max_x, canvas_x))
+            canvas_y = max(min_y, min(max_y, canvas_y))
+
+        if self.resize_mode:
+            self.resize_mode = False
+            self.resize_handle = None
+            self.resize_box_index = -1
+            return
+
+        if self.move_mode:
+            self.move_mode = False
+            self.move_box_index = -1
+            return
+
+        if self.is_drawing:
+            self.is_drawing = False
+            self.canvas.delete("temp_rect")
+            
+            iw, ih = self.current_image.size
+            
+            # Check if box is big enough (Drag operation)
+            if abs(canvas_x - self.start_x) > 5 or abs(canvas_y - self.start_y) > 5:
+                # Convert to normalized coords
+                x1 = (self.start_x - self.offset_x) / self.scale
+                y1 = (self.start_y - self.offset_y) / self.scale
+                x2 = (canvas_x - self.offset_x) / self.scale
+                y2 = (canvas_y - self.offset_y) / self.scale
+                
+                # Clamp
+                x1 = max(0, min(iw, x1))
+                y1 = max(0, min(ih, y1))
+                x2 = max(0, min(iw, x2))
+                y2 = max(0, min(ih, y2))
+                
+                # TEMPLATE MODE: Save size to current class
+                if self.template_mode:
+                    if not self.classes: return
+                    
+                    w = abs(x2 - x1)
+                    h = abs(y2 - y1)
+                    
+                    # Update current class default size
+                    self.classes[self.current_class_index]['default_w'] = int(w)
+                    self.classes[self.current_class_index]['default_h'] = int(h)
+                    
+                    self.template_mode = False
+                    self.update_class_list()
+                    messagebox.showinfo("Template Saved", f"Updated template size for '{self.classes[self.current_class_index]['name']}'")
+                    return
+
+                new_box = normalize_box(x1, y1, x2, y2, iw, ih)
+                
+                # Assign class if available, else -1 (Unlabeled)
+                if self.classes:
+                    new_box['class_id'] = self.classes[self.current_class_index]['id']
+                else:
+                    new_box['class_id'] = -1
+
+                self.boxes.append(new_box)
+                self.selected_indices = {len(self.boxes) - 1}
+                self.update_box_list()
+                self.redraw_canvas()
+
+            # Click operation (Stamp Template)
+            else:
+                if self.template_mode:
+                    self.template_mode = False
+                    messagebox.showinfo("Info", "Template mode cancelled.")
+                    return
+
+                if not self.classes:
+                    messagebox.showwarning("Warning", "No classes loaded!")
+                    return
+                
+                current_class = self.classes[self.current_class_index]
+                default_w = current_class.get('default_w', 100)
+                default_h = current_class.get('default_h', 100)
+                
+                # Top-Left at click
+                click_x = (canvas_x - self.offset_x) / self.scale
+                click_y = (canvas_y - self.offset_y) / self.scale
+                
+                x1 = click_x
+                y1 = click_y
+                x2 = click_x + default_w
+                y2 = click_y + default_h
+                
+                # Clamp stamp to image
+                if x2 > iw: x1 = iw - default_w; x2 = iw
+                if y2 > ih: y1 = ih - default_h; y2 = ih
+                if x1 < 0: x1 = 0
+                if y1 < 0: y1 = 0
+                
+                new_box = normalize_box(x1, y1, x2, y2, iw, ih)
+                new_box['class_id'] = current_class['id']
+                
+                self.boxes.append(new_box)
+                self.selected_indices = {len(self.boxes) - 1}
+                self.update_box_list()
+                self.redraw_canvas()
+                
+    def find_box_at(self, x, y):
+        # Reverse search to find top-most
+        if not self.current_image: return -1
+        
+        iw, ih = self.current_image.size
+        
+        # Convert screen x,y to image x,y
+        img_x = (x - self.offset_x) / self.scale
+        img_y = (y - self.offset_y) / self.scale
+        
+        for i in range(len(self.boxes) - 1, -1, -1):
+            box = self.boxes[i]
+            bx1, by1, bx2, by2 = denormalize_box(box, iw, ih)
+            
+            if bx1 <= img_x <= bx2 and by1 <= img_y <= by2:
+                return i
+        return -1
+
+    # --- Right Sidebar Logic ---
+    def update_box_list(self):
+        self.box_listbox.delete(0, tk.END)
+        for i, box in enumerate(self.boxes):
+            class_id = box['class_id']
+            if class_id == -1:
+                name = "Unlabeled"
+                color = "#FFFFFF"
+            else:
+                class_info = next((c for c in self.classes if c['id'] == class_id), None)
+                name = class_info['name'] if class_info else "Unknown"
+                color = class_info['color'] if class_info else "#FFFFFF"
+            
+            self.box_listbox.insert(tk.END, f"{i+1}: {name}")
+            self.box_listbox.itemconfig(tk.END, {'bg': color, 'fg': 'black' if self.is_light(color) else 'white'})
+
+    def on_box_list_select(self, event):
+        sel = self.box_listbox.curselection()
+        self.selected_indices = set(sel)
+        self.redraw_canvas()
+
+    # --- Class Management ---
+    def enter_template_mode(self):
+        if not self.classes:
+            messagebox.showwarning("Warning", "No classes available.")
+            return
+        self.template_mode = True
+        messagebox.showinfo("Template Mode", f"Draw a box to define the template size for '{self.classes[self.current_class_index]['name']}'.")
+
+    def edit_selected_box_class(self):
+        if not self.selected_indices:
+            return
+        
+        # Ask user to select a class
+        # Since we can't easily pop up a custom listbox dialog without more code, 
+        # let's use simpledialog to ask for Class ID or Name?
+        # Better: Create a Toplevel window with a listbox.
+        
+        top = tk.Toplevel(self.root)
+        top.title("Select Class")
+        top.geometry("300x400")
+        top.configure(bg=THEME['bg_main'])
+        
+        lb = DarkListbox(top)
+        lb.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        for c in self.classes:
+            lb.insert(tk.END, c['name'])
+            lb.itemconfig(tk.END, {'bg': c['color'], 'fg': 'black' if self.is_light(c['color']) else 'white'})
+            
+        def on_select(event):
+            sel = lb.curselection()
+            if sel:
+                new_class_id = self.classes[sel[0]]['id']
+                for idx in self.selected_indices:
+                    self.boxes[idx]['class_id'] = new_class_id
+                self.update_box_list()
+                self.redraw_canvas()
+                top.destroy()
+                
+        lb.bind('<<ListboxSelect>>', on_select)
+
+    # Removed add_class / remove_class as they are managed via file now
+    def add_class(self):
+        pass
+
+    def remove_class(self):
+        pass
+
+    def update_class_list(self):
+        self.class_listbox.delete(0, tk.END)
+        for i, c in enumerate(self.classes):
+            text = f"{c['name']} ({c.get('default_w', 100)}x{c.get('default_h', 100)})"
+            self.class_listbox.insert(tk.END, text)
+            
+            # High Contrast Selection Logic is handled by Listbox configuration usually,
+            # but we can set item specific styles.
+            # However, standard Listbox selection color is set in constructor.
+            # We'll rely on the 'selectbackground' set in DarkListbox, but user asked for White BG Black Text.
+            self.class_listbox.itemconfig(tk.END, {'bg': c['color'], 'fg': 'black' if self.is_light(c['color']) else 'white'})
+            
+        # Re-apply selection
+        if 0 <= self.current_class_index < len(self.classes):
+            self.class_listbox.selection_clear(0, tk.END)
+            self.class_listbox.selection_set(self.current_class_index)
+            self.class_listbox.see(self.current_class_index)
+
+    def on_class_select(self, event):
+        sel = self.class_listbox.curselection()
+        if sel:
+            self.current_class_index = sel[0]
+
+    def cycle_class(self):
+        if not self.classes: return
+        self.current_class_index = (self.current_class_index + 1) % len(self.classes)
+        self.class_listbox.selection_clear(0, tk.END)
+        self.class_listbox.selection_set(self.current_class_index)
+        self.class_listbox.see(self.current_class_index)
+
+    def is_light(self, hex_color):
+        h = hex_color.lstrip('#')
+        r, g, b = tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+        return (r*0.299 + g*0.587 + b*0.114) > 186
+
+    # --- Navigation ---
+    def next_image(self):
+        if self.image_list:
+            new_idx = (self.current_image_index + 1) % len(self.image_list)
+            self.load_image(new_idx)
+
+    def prev_image(self):
+        if self.image_list:
+            new_idx = (self.current_image_index - 1) % len(self.image_list)
+            self.load_image(new_idx)
+            
+    def on_file_select(self, event):
+        sel = self.file_listbox.curselection()
+        if sel:
+            self.load_image(sel[0])
+
+    # --- Box Operations ---
+    def delete_selected_box(self):
+        if self.selected_indices:
+            # Delete in reverse order to avoid index shifting issues
+            for idx in sorted(self.selected_indices, reverse=True):
+                del self.boxes[idx]
+            
+            self.selected_indices = set()
+            self.update_box_list()
+            self.redraw_canvas()
+
+    def copy_boxes(self):
+        if self.selected_indices:
+            self.clipboard = [self.boxes[i].copy() for i in self.selected_indices]
+        else:
+            # Copy all if none selected? Or nothing?
+            # Let's copy all if none selected, as per original logic, or maybe just nothing?
+            # Original logic: "Copy selected box (or all if none selected)"
+            self.clipboard = [b.copy() for b in self.boxes]
+            
+        messagebox.showinfo("Info", f"Copied {len(self.clipboard)} boxes.")
+
+    def paste_boxes(self):
+        if not self.clipboard: return
+        
+        for box in self.clipboard:
+            self.boxes.append(box.copy())
+        
+        self.update_box_list()
+        self.redraw_canvas()
+
