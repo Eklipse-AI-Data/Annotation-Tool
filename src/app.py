@@ -171,6 +171,9 @@ class AnnotationApp:
         self.canvas.bind("<Button-2>", self.start_pan)
         self.canvas.bind("<B2-Motion>", self.pan_image)
         
+        # Mouse motion for grid lines
+        self.canvas.bind("<Motion>", self.on_canvas_motion)
+        
         # Keyboard focus
         self.canvas.bind("<Button-1>", lambda e: self.canvas.focus_set(), add="+")
 
@@ -195,6 +198,8 @@ class AnnotationApp:
         self.current_class_index = -1
         self.class_listbox.selection_clear(0, tk.END)
         self.template_mode = False
+        self.update_cursor()
+        self.redraw_canvas()
         messagebox.showinfo("Info", "Idle Mode: Class deselected.")
 
     def open_settings_dialog(self):
@@ -783,6 +788,49 @@ class AnnotationApp:
         
     def pan_image(self, event):
         self.canvas.scan_dragto(event.x, event.y, gain=1)
+    
+    def update_cursor(self):
+        """Update cursor based on current state"""
+        if self.current_class_index >= 0:
+            # Class is selected - show crosshair cursor
+            self.canvas.config(cursor="crosshair")
+        else:
+            # Idle mode - show default cursor
+            self.canvas.config(cursor="")
+    
+    def on_canvas_motion(self, event):
+        """Draw grid lines following the mouse when a class is selected"""
+        if not self.current_image:
+            return
+        
+        # Only show grid lines when a class is selected (not idle)
+        if self.current_class_index >= 0:
+            # Adjust coordinates for scroll
+            canvas_x = self.canvas.canvasx(event.x)
+            canvas_y = self.canvas.canvasy(event.y)
+            
+            # Remove old grid lines
+            self.canvas.delete("grid_line")
+            
+            # Get canvas dimensions
+            canvas_width = self.canvas.winfo_width()
+            canvas_height = self.canvas.winfo_height()
+            
+            # Draw vertical line
+            self.canvas.create_line(
+                canvas_x, 0, canvas_x, canvas_height,
+                fill="#00FF00", width=1, dash=(2, 4), tags="grid_line"
+            )
+            
+            # Draw horizontal line
+            self.canvas.create_line(
+                0, canvas_y, canvas_width, canvas_y,
+                fill="#00FF00", width=1, dash=(2, 4), tags="grid_line"
+            )
+        else:
+            # Remove grid lines when idle
+            self.canvas.delete("grid_line")
+
 
     def on_canvas_click(self, event):
         if not self.current_image: return
@@ -1154,6 +1202,7 @@ class AnnotationApp:
         sel = self.class_listbox.curselection()
         if sel:
             self.current_class_index = sel[0]
+            self.update_cursor()
 
     def cycle_class(self):
         if not self.classes: return
