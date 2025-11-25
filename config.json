@@ -1,0 +1,10 @@
+{
+    "deselect": "<Escape>",
+    "next_image": "<d>",
+    "prev_image": "<a>",
+    "cycle_class": "<w>",
+    "delete_box": "<q>",
+    "copy": "<Control-c>",
+    "paste": "<Control-v>",
+    "edit_class": "<Control-e>"
+}
