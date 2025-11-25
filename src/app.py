@@ -5,7 +5,7 @@ from PIL import Image, ImageTk
 from src.utils import (load_classes, natural_sort_key, parse_yolo, save_yolo, denormalize_box, 
                        normalize_box, load_config, save_config, resize_images_to_lowres,
                        save_classes, create_class_mapping, update_annotation_file, backup_annotations)
-from src.ui_components import DarkButton, DarkLabel, DarkListbox, DarkFrame, SectionLabel, SidebarFrame, THEME
+from src.ui_components import DarkButton, DarkLabel, DarkListbox, DarkFrame, SectionLabel, SidebarFrame, THEME, DarkEntry
 import tkinter.simpledialog as simpledialog
 
 class AnnotationApp:
@@ -29,6 +29,7 @@ class AnnotationApp:
 
         self.config = load_config("config.json")
         self.classes = load_classes("data/predefined_classes.txt") # List of dicts
+        self.filtered_classes = [(i, c) for i, c in enumerate(self.classes)] # List of (original_index, class_dict)
         self.current_class_index = -1 # Idle state by default
         self.template_mode = False # If True, next draw defines template size
         
@@ -103,9 +104,19 @@ class AnnotationApp:
         
         DarkButton(class_btn_frame, text="Create Template", command=self.enter_template_mode).pack(fill=tk.X, pady=2)
         
+        # Search Bar
+        self.class_search_var = tk.StringVar()
+        self.class_search_var.trace("w", self.filter_classes)
+        search_frame = DarkFrame(self.sidebar)
+        search_frame.pack(fill=tk.X, padx=10, pady=(5, 0))
+        DarkEntry(search_frame, textvariable=self.class_search_var).pack(fill=tk.X)
+        
         self.class_listbox = DarkListbox(self.sidebar, height=10)
         self.class_listbox.pack(fill=tk.X, padx=10, pady=5)
         self.class_listbox.bind('<<ListboxSelect>>', self.on_class_select)
+        
+        # Configure selection colors for "flipped" look (Light BG, Dark FG)
+        self.class_listbox.configure(selectbackground='#cccccc', selectforeground='#252526')
         
         self.update_class_list()
         
@@ -462,6 +473,8 @@ class AnnotationApp:
         
         # Reload classes in the application
         self.classes = load_classes("data/predefined_classes.txt")
+        self.class_search_var.set("") # Clear search
+        self.filtered_classes = [(i, c) for i, c in enumerate(self.classes)]
         self.update_class_list()
         
         # Reload current image to reflect changes
@@ -1180,29 +1193,42 @@ class AnnotationApp:
     def remove_class(self):
         pass
 
+    def filter_classes(self, *args):
+        """Filter class list based on search text"""
+        search_text = self.class_search_var.get().lower()
+        if not search_text:
+            self.filtered_classes = [(i, c) for i, c in enumerate(self.classes)]
+        else:
+            self.filtered_classes = []
+            for i, c in enumerate(self.classes):
+                if search_text in c['name'].lower():
+                    self.filtered_classes.append((i, c))
+        self.update_class_list()
+
     def update_class_list(self):
         self.class_listbox.delete(0, tk.END)
-        for i, c in enumerate(self.classes):
+        for i, c in self.filtered_classes:
             text = f"{c['name']} ({c.get('default_w', 100)}x{c.get('default_h', 100)})"
             self.class_listbox.insert(tk.END, text)
             
-            # High Contrast Selection Logic is handled by Listbox configuration usually,
-            # but we can set item specific styles.
-            # However, standard Listbox selection color is set in constructor.
-            # We'll rely on the 'selectbackground' set in DarkListbox, but user asked for White BG Black Text.
-            self.class_listbox.itemconfig(tk.END, {'bg': c['color'], 'fg': 'black' if self.is_light(c['color']) else 'white'})
-            
-        # Re-apply selection
-        if 0 <= self.current_class_index < len(self.classes):
-            self.class_listbox.selection_clear(0, tk.END)
-            self.class_listbox.selection_set(self.current_class_index)
-            self.class_listbox.see(self.current_class_index)
+        # Re-apply selection if visible
+        if self.current_class_index != -1:
+            # Find if current class is in filtered list
+            for list_idx, (real_idx, _) in enumerate(self.filtered_classes):
+                if real_idx == self.current_class_index:
+                    self.class_listbox.selection_clear(0, tk.END)
+                    self.class_listbox.selection_set(list_idx)
+                    self.class_listbox.see(list_idx)
+                    break
 
     def on_class_select(self, event):
         sel = self.class_listbox.curselection()
         if sel:
-            self.current_class_index = sel[0]
-            self.update_cursor()
+            # Map listbox index to real class index
+            list_index = sel[0]
+            if list_index < len(self.filtered_classes):
+                self.current_class_index = self.filtered_classes[list_index][0]
+                self.update_cursor()
 
     def cycle_class(self):
         if not self.classes: return
