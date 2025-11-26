@@ -5,6 +5,6 @@
     "cycle_class": "<w>",
     "delete_box": "<q>",
     "copy": "<Control-c>",
-    "paste": "<Control-v>",
+    "paste": "<space>",
     "edit_class": "<Control-e>"
 }
