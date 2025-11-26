@@ -231,11 +231,18 @@ class AnnotationApp:
         class_mgmt_tab = DarkFrame(notebook)
         notebook.add(class_mgmt_tab, text="Class Management")
         
+        # Tab 3: Batch Operations
+        batch_ops_tab = DarkFrame(notebook)
+        notebook.add(batch_ops_tab, text="Batch Operations")
+        
         # Setup Keybindings Tab
         self.setup_keybindings_tab(keybindings_tab, top)
         
         # Setup Class Management Tab
         self.setup_class_management_tab(class_mgmt_tab)
+        
+        # Setup Batch Operations Tab
+        self.setup_batch_operations_tab(batch_ops_tab)
     
     def setup_keybindings_tab(self, parent, window):
         """Setup the keybindings configuration tab"""
@@ -483,6 +490,237 @@ class AnnotationApp:
         
         messagebox.showinfo("Success", "Class changes applied successfully!")
 
+    def setup_batch_operations_tab(self, parent):
+        """Setup the batch operations tab for replacing class IDs"""
+        DarkLabel(parent, text="Batch Replace Class IDs", font=("Segoe UI", 12, "bold")).pack(pady=10)
+        
+        # Instructions
+        info_text = "Replace all instances of one class ID with another in the current directory.\nUseful for fixing mislabeled annotations."
+        DarkLabel(parent, text=info_text, wraplength=550, fg=THEME['fg_text']).pack(pady=5)
+        
+        # Warning
+        warning_frame = DarkFrame(parent, bg="#3d2a00")
+        warning_frame.pack(fill=tk.X, padx=10, pady=10)
+        DarkLabel(warning_frame, text="⚠ Warning: This will modify all annotation files in the current directory!", 
+                 fg="#ffcc00", font=("Segoe UI", 9, "bold"), bg="#3d2a00").pack(pady=5)
+        
+        # Main container
+        main_frame = DarkFrame(parent)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Current directory display
+        dir_frame = DarkFrame(main_frame)
+        dir_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        DarkLabel(dir_frame, text="Current Directory:", font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        self.batch_dir_label = DarkLabel(dir_frame, text=self.image_dir if self.image_dir else "No directory loaded", 
+                                        fg=THEME['fg_highlight'], wraplength=550)
+        self.batch_dir_label.pack(anchor="w", padx=10)
+        
+        # Initialize selected class variables
+        self.batch_selected_old_id = None
+        self.batch_selected_new_id = None
+        
+        # Selection frame
+        selection_frame = DarkFrame(main_frame)
+        selection_frame.pack(fill=tk.X, pady=10)
+        
+        # Old Class ID
+        old_class_frame = DarkFrame(selection_frame)
+        old_class_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        
+        DarkLabel(old_class_frame, text="Old Class ID (to replace):", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 5))
+        
+        # Listbox for old class
+        old_list_container = DarkFrame(old_class_frame)
+        old_list_container.pack(fill=tk.BOTH, expand=True)
+        
+        self.batch_old_listbox = DarkListbox(old_list_container, height=10)
+        self.batch_old_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        old_scrollbar = tk.Scrollbar(old_list_container, orient=tk.VERTICAL, command=self.batch_old_listbox.yview)
+        old_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.batch_old_listbox.configure(yscrollcommand=old_scrollbar.set)
+        
+        # Submit button for old class
+        DarkButton(old_class_frame, text="Select Old Class", command=self.submit_old_class,
+                  bg="#555555", fg="#ffffff").pack(fill=tk.X, pady=(5, 0))
+        
+        # Selected old class display
+        self.batch_old_selected_label = DarkLabel(old_class_frame, text="Selected: None", 
+                                                  fg="#00ff00", font=("Segoe UI", 9, "bold"))
+        self.batch_old_selected_label.pack(anchor="w", pady=(5, 0))
+        
+        # New Class ID
+        new_class_frame = DarkFrame(selection_frame)
+        new_class_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        
+        DarkLabel(new_class_frame, text="New Class ID (replacement):", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 5))
+        
+        # Listbox for new class
+        new_list_container = DarkFrame(new_class_frame)
+        new_list_container.pack(fill=tk.BOTH, expand=True)
+        
+        self.batch_new_listbox = DarkListbox(new_list_container, height=10)
+        self.batch_new_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        new_scrollbar = tk.Scrollbar(new_list_container, orient=tk.VERTICAL, command=self.batch_new_listbox.yview)
+        new_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.batch_new_listbox.configure(yscrollcommand=new_scrollbar.set)
+        
+        # Submit button for new class
+        DarkButton(new_class_frame, text="Select New Class", command=self.submit_new_class,
+                  bg="#555555", fg="#ffffff").pack(fill=tk.X, pady=(5, 0))
+        
+        # Selected new class display
+        self.batch_new_selected_label = DarkLabel(new_class_frame, text="Selected: None", 
+                                                  fg="#00ff00", font=("Segoe UI", 9, "bold"))
+        self.batch_new_selected_label.pack(anchor="w", pady=(5, 0))
+        
+        # Populate both listboxes with current classes
+        for i, cls in enumerate(self.classes):
+            display_text = f"{cls['id']}: {cls['name']}"
+            self.batch_old_listbox.insert(tk.END, display_text)
+            self.batch_new_listbox.insert(tk.END, display_text)
+        
+        # Button frame
+        button_frame = DarkFrame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(15, 0))
+        
+        # Execute button
+        DarkButton(button_frame, text="Execute Batch Replace", command=self.execute_batch_replace,
+                  bg="#007acc", fg="#ffffff", font=("Segoe UI", 10, "bold")).pack(fill=tk.X)
+    
+    def submit_old_class(self):
+        """Submit the selected old class"""
+        selection = self.batch_old_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a class from the list first.")
+            return
+        
+        self.batch_selected_old_id = selection[0]
+        class_info = self.classes[self.batch_selected_old_id]
+        self.batch_old_selected_label.config(text=f"Selected: {class_info['id']} - {class_info['name']}")
+    
+    def submit_new_class(self):
+        """Submit the selected new class"""
+        selection = self.batch_new_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a class from the list first.")
+            return
+        
+        self.batch_selected_new_id = selection[0]
+        class_info = self.classes[self.batch_selected_new_id]
+        self.batch_new_selected_label.config(text=f"Selected: {class_info['id']} - {class_info['name']}")
+    
+    def execute_batch_replace(self):
+        """Execute the batch replace operation"""
+        # Check if directory is loaded
+        if not self.image_dir:
+            messagebox.showerror("Error", "No directory loaded. Please open a directory first.")
+            return
+        
+        # Check if selections have been submitted
+        if self.batch_selected_old_id is None:
+            messagebox.showwarning("Warning", "Please select and submit the old class ID to replace.")
+            return
+        
+        if self.batch_selected_new_id is None:
+            messagebox.showwarning("Warning", "Please select and submit the new class ID.")
+            return
+        
+        old_class_id = self.classes[self.batch_selected_old_id]['id']
+        new_class_id = self.classes[self.batch_selected_new_id]['id']
+        
+        old_class_name = self.classes[self.batch_selected_old_id]['name']
+        new_class_name = self.classes[self.batch_selected_new_id]['name']
+        
+        if old_class_id == new_class_id:
+            messagebox.showwarning("Warning", "Old and new class IDs are the same. No changes needed.")
+            return
+        
+        # Count files that will be affected
+        txt_files = [f for f in os.listdir(self.image_dir) if f.lower().endswith('.txt') and f != 'classes.txt']
+        
+        if not txt_files:
+            messagebox.showinfo("Info", "No annotation files found in the directory.")
+            return
+        
+        # Confirm with user
+        confirm_msg = f"Batch Replace Class IDs\n\n"
+        confirm_msg += f"Old Class: {old_class_id} - {old_class_name}\n"
+        confirm_msg += f"New Class: {new_class_id} - {new_class_name}\n\n"
+        confirm_msg += f"Directory: {os.path.basename(self.image_dir)}\n"
+        confirm_msg += f"Files to process: {len(txt_files)}\n\n"
+        confirm_msg += "A backup will be created before making changes.\n\n"
+        confirm_msg += "Do you want to continue?"
+        
+        if not messagebox.askyesno("Confirm Batch Replace", confirm_msg):
+            return
+        
+        # Create backup
+        backup_path = backup_annotations(self.image_dir)
+        if backup_path:
+            messagebox.showinfo("Backup Created", f"Backup created at:\n{os.path.basename(backup_path)}")
+        else:
+            if not messagebox.askyesno("Warning", "Failed to create backup. Continue anyway?"):
+                return
+        
+        # Execute batch replace
+        count = 0
+        files_modified = 0
+        
+        for filename in txt_files:
+            file_path = os.path.join(self.image_dir, filename)
+            
+            try:
+                with open(file_path, 'r') as f:
+                    lines = f.readlines()
+                
+                new_lines = []
+                modified = False
+                
+                for line in lines:
+                    parts = line.strip().split()
+                    if len(parts) >= 5:
+                        try:
+                            current_id = int(parts[0])
+                            if current_id == old_class_id:
+                                # Replace the class ID
+                                parts[0] = str(new_class_id)
+                                new_line = " ".join(parts) + "\n"
+                                new_lines.append(new_line)
+                                modified = True
+                                count += 1
+                            else:
+                                new_lines.append(line)
+                        except ValueError:
+                            new_lines.append(line)
+                    else:
+                        new_lines.append(line)
+                
+                if modified:
+                    with open(file_path, 'w') as f:
+                        f.writelines(new_lines)
+                    files_modified += 1
+                    
+            except Exception as e:
+                messagebox.showerror("Error", f"Error processing {filename}: {e}")
+                return
+        
+        # Show results
+        result_msg = f"Batch Replace Complete!\n\n"
+        result_msg += f"Files modified: {files_modified}\n"
+        result_msg += f"Labels replaced: {count}\n\n"
+        result_msg += f"Changed from: {old_class_name} (ID {old_class_id})\n"
+        result_msg += f"Changed to: {new_class_name} (ID {new_class_id})"
+        
+        messagebox.showinfo("Success", result_msg)
+        
+        # Reload current image to reflect changes
+        if self.current_image_index != -1:
+            self.load_image(self.current_image_index)
+
 
     def capture_key(self, button, action):
         button.config(text="Press any key...")
@@ -564,6 +802,17 @@ class AnnotationApp:
     def select_image_dir(self):
         path = filedialog.askdirectory(title="Select Image Directory")
         if path:
+            # Save current work before switching directories
+            if self.current_image_index != -1 and self.auto_save.get() and self.image_dir:
+                self.save_annotations()
+            
+            # Reset state when loading new directory
+            self.current_image_index = -1
+            self.boxes = []
+            self.selected_indices = set()
+            self.current_image = None
+            self.tk_image = None
+            
             # Ask user if they want to lower resolution
             response = messagebox.askyesno(
                 "Lower Resolution?",
@@ -589,9 +838,21 @@ class AnnotationApp:
             else:
                 self.image_dir = path
             
-            self.load_images()
+            # Set output directory
             if not self.output_dir:
                 self.output_dir = path # Default output to same dir
+            else:
+                # Ask if user wants to use the same output dir or the new image dir
+                use_same = messagebox.askyesno(
+                    "Output Directory",
+                    f"Current output directory: {os.path.basename(self.output_dir)}\n\n"
+                    f"Do you want to keep using this directory?\n\n"
+                    f"Click 'No' to use the new image directory as output."
+                )
+                if not use_same:
+                    self.output_dir = path
+            
+            self.load_images()
             self.update_dir_label()
 
     def select_output_dir(self):
