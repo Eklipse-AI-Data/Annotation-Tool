@@ -7,6 +7,7 @@ from src.utils import (load_classes, natural_sort_key, parse_yolo, save_yolo, de
                        save_classes, create_class_mapping, update_annotation_file, backup_annotations)
 from src.ui_components import DarkButton, DarkLabel, DarkListbox, DarkFrame, SectionLabel, SidebarFrame, THEME, DarkEntry
 import tkinter.simpledialog as simpledialog
+import threading
 
 class AnnotationApp:
     def __init__(self, root):
@@ -19,6 +20,7 @@ class AnnotationApp:
         self.image_dir = ""
         self.output_dir = ""
         self.image_list = []
+        self.full_image_list = [] # Store full list for filtering
         self.current_image_index = -1
         self.current_image = None # PIL Image
         self.tk_image = None # ImageTk
@@ -55,6 +57,85 @@ class AnnotationApp:
         # UI Setup
         self.setup_ui()
         self.bind_events()
+        
+        # Populate filter combobox
+        self.update_filter_combo()
+
+    def update_filter_combo(self):
+        values = [f"{c['id']}: {c['name']}" for c in self.classes]
+        self.filter_combo['values'] = values
+
+    def apply_image_filter(self):
+        if not self.output_dir:
+            messagebox.showwarning("Warning", "Please set Output Directory first to filter by annotations.")
+            return
+            
+        selection = self.filter_combo.get()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a class to filter by.")
+            return
+            
+        try:
+            class_id = int(selection.split(':')[0])
+        except ValueError:
+            return
+
+        # Disable UI during scan
+        self.root.config(cursor="wait")
+        
+        def scan_thread():
+            filtered_images = []
+            total = len(self.full_image_list)
+            
+            for i, filename in enumerate(self.full_image_list):
+                name, _ = os.path.splitext(filename)
+                txt_path = os.path.join(self.output_dir, name + ".txt")
+                
+                if os.path.exists(txt_path):
+                    try:
+                        with open(txt_path, 'r') as f:
+                            for line in f:
+                                parts = line.strip().split()
+                                if parts and int(parts[0]) == class_id:
+                                    filtered_images.append(filename)
+                                    break
+                    except:
+                        pass
+            
+            # Update UI on main thread
+            self.root.after(0, lambda: self.finish_filter(filtered_images, selection))
+
+        threading.Thread(target=scan_thread, daemon=True).start()
+
+    def finish_filter(self, filtered_images, class_name):
+        self.root.config(cursor="")
+        self.image_list = filtered_images
+        self.image_list.sort(key=natural_sort_key)
+        
+        self.file_listbox.delete(0, tk.END)
+        for f in self.image_list:
+            self.file_listbox.insert(tk.END, f)
+            
+        if self.image_list:
+            self.load_image(0)
+        else:
+            self.current_image = None
+            self.canvas.delete("all")
+            self.root.title("AnnotationTool - No images found with class " + class_name)
+            
+        messagebox.showinfo("Filter Result", f"Found {len(filtered_images)} images containing {class_name}")
+
+    def clear_image_filter(self):
+        self.image_list = list(self.full_image_list)
+        self.image_list.sort(key=natural_sort_key)
+        
+        self.file_listbox.delete(0, tk.END)
+        for f in self.image_list:
+            self.file_listbox.insert(tk.END, f)
+            
+        if self.image_list:
+            self.load_image(0)
+        self.filter_combo.set("")
         
     def setup_ui(self):
         # Toolbar (Top) for toggles
@@ -136,8 +217,32 @@ class AnnotationApp:
 
         # File List
         SectionLabel(self.sidebar, text="Files").pack(fill=tk.X, padx=10, pady=(10, 0))
-        self.file_listbox = DarkListbox(self.sidebar, height=15)
-        self.file_listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        # Filter Section
+        filter_frame = DarkFrame(self.sidebar, bg=THEME['bg_sidebar'])
+        filter_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        self.filter_var = tk.StringVar()
+        self.filter_combo = ttk.Combobox(filter_frame, textvariable=self.filter_var, state="readonly")
+        self.filter_combo.pack(fill=tk.X, pady=2)
+        
+        btn_filter_frame = DarkFrame(filter_frame, bg=THEME['bg_sidebar'])
+        btn_filter_frame.pack(fill=tk.X, pady=2)
+        
+        DarkButton(btn_filter_frame, text="Filter", command=self.apply_image_filter, width=8).pack(side=tk.LEFT, padx=(0, 2), expand=True, fill=tk.X)
+        DarkButton(btn_filter_frame, text="Clear", command=self.clear_image_filter, width=8).pack(side=tk.RIGHT, padx=(2, 0), expand=True, fill=tk.X)
+
+        # Container for listbox and scrollbar
+        file_list_container = DarkFrame(self.sidebar, bg=THEME['bg_sidebar'])
+        file_list_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        self.file_listbox = DarkListbox(file_list_container, height=15)
+        self.file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        file_scrollbar = tk.Scrollbar(file_list_container, orient=tk.VERTICAL, command=self.file_listbox.yview)
+        file_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.file_listbox.configure(yscrollcommand=file_scrollbar.set)
         self.file_listbox.bind('<<ListboxSelect>>', self.on_file_select)
 
     def setup_right_sidebar(self):
@@ -838,20 +943,6 @@ class AnnotationApp:
             else:
                 self.image_dir = path
             
-            # Set output directory
-            if not self.output_dir:
-                self.output_dir = path # Default output to same dir
-            else:
-                # Ask if user wants to use the same output dir or the new image dir
-                use_same = messagebox.askyesno(
-                    "Output Directory",
-                    f"Current output directory: {os.path.basename(self.output_dir)}\n\n"
-                    f"Do you want to keep using this directory?\n\n"
-                    f"Click 'No' to use the new image directory as output."
-                )
-                if not use_same:
-                    self.output_dir = path
-            
             self.load_images()
             self.update_dir_label()
 
@@ -873,6 +964,7 @@ class AnnotationApp:
                 self.image_list.append(f)
         
         self.image_list.sort(key=natural_sort_key)
+        self.full_image_list = list(self.image_list) # Keep a copy of full list
         
         self.file_listbox.delete(0, tk.END)
         for f in self.image_list:
