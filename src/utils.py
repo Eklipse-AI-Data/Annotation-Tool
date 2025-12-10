@@ -34,9 +34,9 @@ def load_classes(file_path):
 def load_config(path):
     default_config = {
         "deselect": "<Escape>",
-        "next_image": "<d>",
-        "prev_image": "<a>",
-        "cycle_class": "<w>",
+        "next_image": "<Right>",
+        "prev_image": "<Left>",
+        "cycle_class": "<Down>",
         "delete_box": "<Delete>",
         "copy": "<Control-c>",
         "paste": "<Control-v>",

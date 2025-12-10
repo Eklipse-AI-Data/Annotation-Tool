@@ -2,7 +2,7 @@
     "deselect": "<Escape>",
     "next_image": "<d>",
     "prev_image": "<a>",
-    "cycle_class": "<w>",
+    "cycle_class": "<Down>",
     "delete_box": "<q>",
     "copy": "<Control-c>",
     "paste": "<space>",

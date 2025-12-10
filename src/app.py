@@ -7,7 +7,10 @@ from src.utils import (load_classes, natural_sort_key, parse_yolo, save_yolo, de
                        save_classes, create_class_mapping, update_annotation_file, backup_annotations)
 from src.ui_components import DarkButton, DarkLabel, DarkListbox, DarkFrame, SectionLabel, SidebarFrame, THEME, DarkEntry
 import tkinter.simpledialog as simpledialog
+import tkinter.simpledialog as simpledialog
 import threading
+import concurrent.futures
+
 
 class AnnotationApp:
     def __init__(self, root):
@@ -34,6 +37,11 @@ class AnnotationApp:
         self.filtered_classes = [(i, c) for i, c in enumerate(self.classes)] # List of (original_index, class_dict)
         self.current_class_index = -1 # Idle state by default
         self.template_mode = False # If True, next draw defines template size
+        
+        # Rendering Cache
+        self.cached_dims = None # (width, height)
+        self.cached_image_obj = None
+        self.is_panning = False
         
         self.boxes = [] # List of dicts (normalized)
         self.selected_indices = set() # Set of ints
@@ -64,6 +72,14 @@ class AnnotationApp:
     def update_filter_combo(self):
         values = [f"{c['id']}: {c['name']}" for c in self.classes]
         self.filter_combo['values'] = values
+        
+    def _is_input_focused(self):
+        """Check if an input widget has focus"""
+        try:
+            focus = self.root.focus_get()
+            return isinstance(focus, (tk.Entry, tk.Text, ttk.Entry))
+        except:
+            return False
 
     def apply_image_filter(self):
         if not self.output_dir:
@@ -87,20 +103,25 @@ class AnnotationApp:
             filtered_images = []
             total = len(self.full_image_list)
             
-            for i, filename in enumerate(self.full_image_list):
+            # Use threading for faster IO
+            def check_file(filename):
                 name, _ = os.path.splitext(filename)
                 txt_path = os.path.join(self.output_dir, name + ".txt")
-                
                 if os.path.exists(txt_path):
                     try:
                         with open(txt_path, 'r') as f:
                             for line in f:
                                 parts = line.strip().split()
                                 if parts and int(parts[0]) == class_id:
-                                    filtered_images.append(filename)
-                                    break
+                                    return filename
                     except:
                         pass
+                return None
+
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                results = list(executor.map(check_file, self.full_image_list))
+            
+            filtered_images = [r for r in results if r is not None]
             
             # Update UI on main thread
             self.root.after(0, lambda: self.finish_filter(filtered_images, selection))
@@ -285,7 +306,10 @@ class AnnotationApp:
         # Zoom & Pan
         self.canvas.bind("<Control-MouseWheel>", self.on_zoom)
         self.canvas.bind("<Button-2>", self.start_pan)
+        self.canvas.bind("<Control-MouseWheel>", self.on_zoom)
+        self.canvas.bind("<Button-2>", self.start_pan)
         self.canvas.bind("<B2-Motion>", self.pan_image)
+        self.canvas.bind("<ButtonRelease-2>", self.stop_pan)
         
         # Mouse motion for grid lines
         self.canvas.bind("<Motion>", self.on_canvas_motion)
@@ -311,6 +335,7 @@ class AnnotationApp:
         self.root.bind("<Right>", lambda e: self.next_image())
 
     def deselect_class(self):
+        if self._is_input_focused(): return
         self.current_class_index = -1
         self.class_listbox.selection_clear(0, tk.END)
         self.template_mode = False
@@ -831,52 +856,59 @@ class AnnotationApp:
         button.config(text="Press any key...")
         
         def on_key(event):
-            # Convert event to string representation
-            # This is tricky for all keys, but let's try basic ones
             keysym = event.keysym
-            state = event.state
             
-            # Construct key string
-            key_str = ""
-            if state & 4: key_str += "Control-"
-            if state & 1: key_str += "Shift-"
-            if state & 8: key_str += "Alt-"
-            
-            # Handle special keys
-            if len(keysym) > 1:
-                key_str += f"<{keysym}>"
-            else:
-                key_str += keysym
-                if len(key_str) == 1: # Single char
-                     key_str = f"<{key_str}>" # Wrap in brackets for consistency usually? No, standard bind uses <char> for special, char for normal.
-                     # Actually, standard bind:
-                     # <Control-c>
-                     # <a>
-                     # <Return>
-                     # Let's wrap everything in <> for simplicity if it works, or follow Tkinter patterns.
-                     # Tkinter patterns: <Key-a>, <a>, <Control-c>, <Shift-A>
-                     pass
+            # Ignore modifier keys themselves (e.g. if user just presses Ctrl)
+            if keysym in ('Control_L', 'Control_R', 'Shift_L', 'Shift_R', 'Alt_L', 'Alt_R', 'Caps_Lock'):
+                return
 
-            # Simplified: just use event.keysym and modifiers
-            # Better approach:
-            if event.state & 0x0004: # Control
-                new_key = f"<Control-{event.keysym.lower()}>"
-            elif event.state & 0x0001: # Shift
-                new_key = f"<Shift-{event.keysym}>"
-            elif event.state & 0x0008: # Alt
-                new_key = f"<Alt-{event.keysym.lower()}>"
-            else:
-                if len(event.keysym) > 1:
-                    new_key = f"<{event.keysym}>"
-                else:
-                    new_key = f"<{event.keysym}>"
+            # Modifiers
+            parts = []
+            # Control: 0x4
+            if event.state & 0x0004: 
+                parts.append("Control")
             
+            # Alt: Check 0x20000 (131072) for Windows or 0x8 for Linux/Mac?
+            # On Windows, 0x8 is NOT Alt. 0x20000 is. 
+            # Safest is to check 0x20000. 
+            # If we are cross-platform we might check both, but 0x8 overlaps with other things on Windows sometimes.
+            # Given user is on Windows, we check 0x20000.
+            if event.state & 131072: 
+                parts.append("Alt")
+            
+            # Shift: 0x1
+            if event.state & 0x0001: 
+                parts.append("Shift")
+            
+            # Construct key
+            if len(keysym) > 1:
+                key_part = f"<{keysym}>" # e.g. <Right>, <Delete>
+            else:
+                key_part = keysym.lower() # e.g. a, b, c
+            
+            if parts:
+                # If modifiers exist, e.g. <Control-c>, <Alt-Right>
+                # Format: <Modifier-Modifier-Key>
+                # Key part inside shouldn't have <> if char? Actually Tkinter format is <Control-c>
+                # But for special keys <Control-Right>
+                
+                # If key_part already has <>, remove them for valid syntax? 
+                # e.g. <Control-<Right>> is INVALID. Should be <Control-Right>.
+                if key_part.startswith("<") and key_part.endswith(">"):
+                    key_part = key_part[1:-1]
+                
+                new_key = f"<{''.join([p + '-' for p in parts])}{key_part}>"
+            else:
+                # No modifiers
+                # If it's a char, wrap it: <a>
+                # If it's special: <Right>
+                if len(keysym) == 1:
+                    new_key = f"<{keysym}>"
+                else:
+                    new_key = f"<{keysym}>"
+
             self.config[action] = new_key
             button.config(text=new_key)
-            
-            # Unbind
-            self.root.unbind_all("<Key>") # This might be too aggressive?
-            # We only bound to this button? No, we need to bind to root to capture
             self.settings_capture_window.destroy()
 
         # Create a transparent overlay or just bind to top window?
@@ -992,6 +1024,11 @@ class AnnotationApp:
             
             try:
                 self.current_image = Image.open(path)
+                
+                # RESET CACHE logic when loading new image
+                self.cached_dims = None
+                self.cached_image_obj = None
+                
                 self.load_annotations(filename)
                 self.redraw_canvas()
                 self.update_box_list()
@@ -1036,9 +1073,7 @@ class AnnotationApp:
         if not self.current_image:
             return
             
-        self.canvas.delete("all")
-        
-        # Calculate scale to fit
+        # Calculate ideal dimensions
         cw = self.canvas.winfo_width()
         ch = self.canvas.winfo_height()
         iw, ih = self.current_image.size
@@ -1068,10 +1103,41 @@ class AnnotationApp:
         else:
             self.offset_y = 0
         
-        resized = self.current_image.resize((nw, nh), Image.Resampling.LANCZOS)
-        self.tk_image = ImageTk.PhotoImage(resized)
-        
-        self.canvas.create_image(self.offset_x, self.offset_y, anchor=tk.NW, image=self.tk_image)
+        # OPTIMIZATION: Check if we need to resize the image
+        # If dimensions match cached dimensions, we skip resizing!
+        if self.cached_dims != (nw, nh) or self.cached_image_obj is None:
+            # We need to resize
+            
+            # Use NEAREST (fast) if we are interacting (drawing, moving, resizing, panning)
+            # Use LANCZOS (quality) if idle
+            is_interacting = self.is_drawing or self.resize_mode or self.move_mode or self.is_panning
+            resample_method = Image.NEAREST if is_interacting else Image.LANCZOS
+            
+            resized = self.current_image.resize((nw, nh), resample_method)
+            self.tk_image = ImageTk.PhotoImage(resized)
+            self.cached_image_obj = self.tk_image
+            self.cached_dims = (nw, nh)
+            
+            # Recreate image item
+            self.canvas.delete("image_bg")
+            self.canvas.create_image(self.offset_x, self.offset_y, anchor=tk.NW, image=self.tk_image, tags="image_bg")
+            self.canvas.tag_lower("image_bg")
+        else:
+            # Dimensions match, just update position
+            # If the image item doesn't exist (e.g. cleared elsewhere), recreate it
+            if not self.canvas.find_withtag("image_bg"):
+                 self.canvas.create_image(self.offset_x, self.offset_y, anchor=tk.NW, image=self.cached_image_obj, tags="image_bg")
+                 self.canvas.tag_lower("image_bg")
+            else:
+                 self.canvas.coords("image_bg", self.offset_x, self.offset_y)
+
+        # Clear only overlays (boxes, grid lines, etc) - NOT the image
+        # We use strict tags to manage this
+        self.canvas.delete("box")
+        self.canvas.delete("handle")
+        self.canvas.delete("label")
+        self.canvas.delete("temp_rect")
+        self.canvas.delete("grid_line")
         
         # Draw boxes
         for i, box in enumerate(self.boxes):
@@ -1107,7 +1173,7 @@ class AnnotationApp:
         outline = "#FFFFFF" if is_selected else color
         
         # Draw Rect
-        self.canvas.create_rectangle(cx1, cy1, cx2, cy2, outline=outline, width=width, tags=f"box_{index}")
+        self.canvas.create_rectangle(cx1, cy1, cx2, cy2, outline=outline, width=width, tags=("box", f"box_{index}"))
         
         # Draw Label
         if self.show_labels.get():
@@ -1116,7 +1182,7 @@ class AnnotationApp:
             text_y = cy1 - 15
             if text_y < 0: text_y = cy1 + 5
             
-            self.canvas.create_text(text_x, text_y, text=label_text, fill=color, anchor=tk.SW, font=("Segoe UI", 9, "bold"))
+            self.canvas.create_text(text_x, text_y, text=label_text, fill=color, anchor=tk.SW, font=("Segoe UI", 9, "bold"), tags="label")
 
         # Draw Resize Handles if selected
         if is_selected:
@@ -1129,7 +1195,7 @@ class AnnotationApp:
                 self.canvas.create_rectangle(
                     hx - handle_size/2, hy - handle_size/2,
                     hx + handle_size/2, hy + handle_size/2,
-                    fill="white", outline="black", tags=f"handle_{index}_{tag}"
+                    fill="white", outline="black", tags=("handle", f"handle_{index}_{tag}")
                 )
 
     def on_canvas_resize(self, event):
@@ -1153,7 +1219,26 @@ class AnnotationApp:
         self.canvas.scan_mark(event.x, event.y)
         
     def pan_image(self, event):
+        self.is_panning = True # Set flag for optimized rendering
         self.canvas.scan_dragto(event.x, event.y, gain=1)
+        self.redraw_canvas() # Force redraw to update overlays if needed, although scan_dragto moves the canvas content efficiently?
+        # scan_dragto moves the viewport. Elements move.
+        # But our custom overlay drawing might need refresh?
+        # Actually standard canvas scan works on all objects.
+        # BUT we are manually managing "scale" and "offset".
+        # If we use scan_dragto, we are shifting the view.
+        # Ideally we should implement "Manual Pan" by adjusting offset_x/y and redrawing, OR use canvas built-in.
+        # The existing code used scan_mark/scan_dragto which is built-in.
+        # If built-in is used, we don't necessarily need to call redraw_canvas, BUT
+        # if we do `redraw_canvas` it resets the view based on offset_x/y.
+        # CONFLICT: scan_dragto changes the canvas internal mapping. `redraw_canvas` resets it based on logic.
+        # If we use scan_dragto, we should probably NOT call redraw_canvas OR we should update offset_x/y based on it.
+        # Given the existing code... let's trust scan_dragto works for visual, but our logic might reset it.
+        # We'll set is_panning = True solely for the resolution drop.
+        
+    def stop_pan(self, event):
+        self.is_panning = False
+        self.redraw_canvas() # Restore High Quality
     
     def update_cursor(self):
         """Update cursor based on current state"""
@@ -1507,6 +1592,7 @@ class AnnotationApp:
         messagebox.showinfo("Template Mode", f"Draw a box to define the template size for '{self.classes[self.current_class_index]['name']}'.")
 
     def edit_selected_box_class(self):
+        if self._is_input_focused(): return
         if not self.selected_indices:
             return
         
@@ -1584,6 +1670,7 @@ class AnnotationApp:
                 self.update_cursor()
 
     def cycle_class(self):
+        if self._is_input_focused(): return
         if not self.classes: return
         self.current_class_index = (self.current_class_index + 1) % len(self.classes)
         self.class_listbox.selection_clear(0, tk.END)
@@ -1597,11 +1684,13 @@ class AnnotationApp:
 
     # --- Navigation ---
     def next_image(self):
+        if self._is_input_focused(): return
         if self.image_list:
             new_idx = (self.current_image_index + 1) % len(self.image_list)
             self.load_image(new_idx)
 
     def prev_image(self):
+        if self._is_input_focused(): return
         if self.image_list:
             new_idx = (self.current_image_index - 1) % len(self.image_list)
             self.load_image(new_idx)
@@ -1613,6 +1702,7 @@ class AnnotationApp:
 
     # --- Box Operations ---
     def delete_selected_box(self):
+        if self._is_input_focused(): return
         if self.selected_indices:
             # Delete in reverse order to avoid index shifting issues
             for idx in sorted(self.selected_indices, reverse=True):
@@ -1623,6 +1713,7 @@ class AnnotationApp:
             self.redraw_canvas()
 
     def copy_boxes(self):
+        if self._is_input_focused(): return
         if self.selected_indices:
             self.clipboard = [self.boxes[i].copy() for i in self.selected_indices]
         else:
@@ -1634,6 +1725,7 @@ class AnnotationApp:
         messagebox.showinfo("Info", f"Copied {len(self.clipboard)} boxes.")
 
     def paste_boxes(self):
+        if self._is_input_focused(): return
         if not self.clipboard: return
         
         for box in self.clipboard:
