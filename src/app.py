@@ -15,7 +15,7 @@ import concurrent.futures
 class AnnotationApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("AnnotationTool - Eclipse Theme")
+        self.root.title("Annotation Tool - Midnight Glass")
         self.root.geometry("1400x800")
         self.root.configure(bg=THEME['bg_main'])
         
@@ -286,7 +286,7 @@ class AnnotationApp:
         self.canvas_frame.grid_rowconfigure(0, weight=1)
         self.canvas_frame.grid_columnconfigure(0, weight=1)
         
-        self.canvas = tk.Canvas(self.canvas_frame, bg="#111111", highlightthickness=0)
+        self.canvas = tk.Canvas(self.canvas_frame, bg=THEME['bg_main'], highlightthickness=0)
         self.canvas.grid(row=0, column=0, sticky="nsew")
         
         # Scrollbars
@@ -469,7 +469,7 @@ class AnnotationApp:
         
         # Apply changes button
         DarkButton(button_frame, text="Apply Changes", command=self.apply_class_changes, 
-                  bg="#007acc", fg="#ffffff").pack(fill=tk.X, pady=5)
+                  bg=THEME['accent'], fg=THEME['fg_highlight']).pack(fill=tk.X, pady=5)
     
     def update_class_mgmt_list(self):
         """Update the class management listbox"""
@@ -674,7 +674,7 @@ class AnnotationApp:
         
         # Submit button for old class
         DarkButton(old_class_frame, text="Select Old Class", command=self.submit_old_class,
-                  bg="#555555", fg="#ffffff").pack(fill=tk.X, pady=(5, 0))
+                  bg=THEME['button_bg'], fg=THEME['fg_highlight']).pack(fill=tk.X, pady=(5, 0))
         
         # Selected old class display
         self.batch_old_selected_label = DarkLabel(old_class_frame, text="Selected: None", 
@@ -700,7 +700,7 @@ class AnnotationApp:
         
         # Submit button for new class
         DarkButton(new_class_frame, text="Select New Class", command=self.submit_new_class,
-                  bg="#555555", fg="#ffffff").pack(fill=tk.X, pady=(5, 0))
+                  bg=THEME['button_bg'], fg=THEME['fg_highlight']).pack(fill=tk.X, pady=(5, 0))
         
         # Selected new class display
         self.batch_new_selected_label = DarkLabel(new_class_frame, text="Selected: None", 
@@ -719,7 +719,7 @@ class AnnotationApp:
         
         # Execute button
         DarkButton(button_frame, text="Execute Batch Replace", command=self.execute_batch_replace,
-                  bg="#007acc", fg="#ffffff", font=("Segoe UI", 10, "bold")).pack(fill=tk.X)
+                  bg=THEME['accent'], fg=THEME['fg_highlight'], font=("Segoe UI", 10, "bold")).pack(fill=tk.X)
     
     def submit_old_class(self):
         """Submit the selected old class"""
@@ -1596,22 +1596,27 @@ class AnnotationApp:
         if not self.selected_indices:
             return
         
-        # Ask user to select a class
-        # Since we can't easily pop up a custom listbox dialog without more code, 
-        # let's use simpledialog to ask for Class ID or Name?
-        # Better: Create a Toplevel window with a listbox.
-        
+        # Create themed popup dialog
         top = tk.Toplevel(self.root)
         top.title("Select Class")
-        top.geometry("300x400")
+        top.geometry("350x500")
         top.configure(bg=THEME['bg_main'])
         
-        lb = DarkListbox(top)
+        # Add header label
+        header = SectionLabel(top, text="SELECT CLASS")
+        header.pack(pady=(15, 10), padx=15, anchor='w')
+        
+        # Create frame for listbox with padding
+        list_frame = DarkFrame(top, bg=THEME['bg_sidebar'])
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 15))
+        
+        # Styled listbox
+        lb = DarkListbox(list_frame, height=15)
         lb.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
+        # Populate with class names (no colored backgrounds)
         for c in self.classes:
-            lb.insert(tk.END, c['name'])
-            lb.itemconfig(tk.END, {'bg': c['color'], 'fg': 'black' if self.is_light(c['color']) else 'white'})
+            lb.insert(tk.END, f"  {c['name']}")
             
         def on_select(event):
             sel = lb.curselection()
