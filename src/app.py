@@ -8,6 +8,7 @@ from src.utils import (load_classes, natural_sort_key, parse_yolo, save_yolo, de
 from src.ui_components import DarkButton, DarkLabel, DarkListbox, DarkFrame, SectionLabel, SidebarFrame, THEME, DarkEntry
 import tkinter.simpledialog as simpledialog
 import tkinter.simpledialog as simpledialog
+import shutil
 import threading
 import concurrent.futures
 
@@ -365,6 +366,10 @@ class AnnotationApp:
         batch_ops_tab = DarkFrame(notebook)
         notebook.add(batch_ops_tab, text="Batch Operations")
         
+        # Tab 4: Game Presets
+        game_presets_tab = DarkFrame(notebook)
+        notebook.add(game_presets_tab, text="Game Presets")
+        
         # Setup Keybindings Tab
         self.setup_keybindings_tab(keybindings_tab, top)
         
@@ -373,6 +378,9 @@ class AnnotationApp:
         
         # Setup Batch Operations Tab
         self.setup_batch_operations_tab(batch_ops_tab)
+
+        # Setup Game Presets Tab
+        self.setup_game_presets_tab(game_presets_tab)
     
     def setup_keybindings_tab(self, parent, window):
         """Setup the keybindings configuration tab"""
@@ -850,6 +858,151 @@ class AnnotationApp:
         # Reload current image to reflect changes
         if self.current_image_index != -1:
             self.load_image(self.current_image_index)
+
+    def setup_game_presets_tab(self, parent):
+        """Setup the game presets tab for switching class files"""
+        DarkLabel(parent, text="Switch Game Classes", font=("Segoe UI", 12, "bold")).pack(pady=10)
+        
+        # Instructions
+        info_text = "Select a game to use its predefined classes. The current 'predefined_classes.txt' will be overwritten."
+        DarkLabel(parent, text=info_text, wraplength=550, fg=THEME['fg_text']).pack(pady=5)
+        
+        # Main container
+        main_frame = DarkFrame(parent)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Left side: Preset list
+        list_frame = DarkFrame(main_frame)
+        list_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+        
+        DarkLabel(list_frame, text="Available Games (data/*.txt):", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=5)
+        
+        # Listbox with scrollbar
+        list_container = DarkFrame(list_frame)
+        list_container.pack(fill=tk.BOTH, expand=True)
+        
+        self.preset_listbox = DarkListbox(list_container, height=15)
+        self.preset_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        scrollbar = tk.Scrollbar(list_container, orient=tk.VERTICAL, command=self.preset_listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.preset_listbox.configure(yscrollcommand=scrollbar.set)
+        
+        # Populate with current presets
+        self.refresh_preset_list()
+        
+        # Right side: Buttons
+        button_frame = DarkFrame(main_frame)
+        button_frame.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        DarkLabel(button_frame, text="Actions:", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=5)
+        
+        DarkButton(button_frame, text="Refresh List", command=self.refresh_preset_list).pack(fill=tk.X, pady=5)
+        
+        # Load preset button
+        DarkButton(button_frame, text="Load Selected Game", command=self.load_selected_preset, 
+                  bg=THEME['accent'], fg=THEME['fg_highlight']).pack(fill=tk.X, pady=5)
+        
+        # Separator
+        tk.Frame(button_frame, height=2, bg=THEME['border']).pack(fill=tk.X, pady=10)
+        
+        # Save current classes as new preset
+        DarkLabel(button_frame, text="Save Current As:", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(5, 0))
+        self.save_preset_entry = DarkEntry(button_frame)
+        self.save_preset_entry.pack(fill=tk.X, pady=2)
+        
+        DarkButton(button_frame, text="Save Preset", command=self.save_current_as_preset).pack(fill=tk.X, pady=2)
+
+    def refresh_preset_list(self):
+        """Refresh the list of available presets in the data directory"""
+        self.preset_listbox.delete(0, tk.END)
+        data_dir = "data"
+        if not os.path.exists(data_dir):
+            return
+            
+        # Get all .txt files except predefined_classes.txt
+        presets = [f for f in os.listdir(data_dir) if f.lower().endswith('.txt') and f.lower() != 'predefined_classes.txt']
+        presets.sort()
+        
+        for preset in presets:
+            self.preset_listbox.insert(tk.END, preset)
+
+    def load_selected_preset(self):
+        """Load the selected preset file into predefined_classes.txt"""
+        selection = self.preset_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a game preset to load.")
+            return
+        
+        filename = self.preset_listbox.get(selection[0])
+        src_path = os.path.join("data", filename)
+        dst_path = os.path.join("data", "predefined_classes.txt")
+        
+        # First, offer to backup the current classes
+        if messagebox.askyesno("Backup Current Classes?", 
+                                "Do you want to save the CURRENT classes to a new file before overwriting?"):
+            current_name = simpledialog.askstring("Save Current Classes", 
+                                                 "Enter a name for the current classes (e.g. arc_raiders):")
+            if current_name:
+                if not current_name.lower().endswith('.txt'):
+                    current_name += ".txt"
+                
+                backup_dst = os.path.join("data", current_name)
+                try:
+                    shutil.copy2(dst_path, backup_dst)
+                    messagebox.showinfo("Backup Success", f"Current classes saved as {current_name}")
+                    self.refresh_preset_list()
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to save current classes: {e}")
+                    return
+        
+        # Perform the switch
+        try:
+            shutil.copy2(src_path, dst_path)
+            messagebox.showinfo("Success", f"Loaded classes from {filename}!")
+            
+            # Reload classes in the application
+            self.classes = load_classes(dst_path)
+            self.class_search_var.set("") # Clear search
+            self.filtered_classes = [(i, c) for i, c in enumerate(self.classes)]
+            self.update_class_list()
+            self.update_filter_combo()
+            
+            # Reload current image to reflect changes (especially if names changed)
+            if self.current_image_index != -1:
+                self.load_image(self.current_image_index)
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load preset: {e}")
+
+    def save_current_as_preset(self):
+        """Save the current predefined_classes.txt as a new named preset"""
+        new_name = self.save_preset_entry.get().strip()
+        if not new_name:
+            messagebox.showwarning("Warning", "Please enter a name for the new preset.")
+            return
+        
+        if not new_name.lower().endswith('.txt'):
+            new_name += ".txt"
+            
+        if new_name.lower() == 'predefined_classes.txt':
+            messagebox.showwarning("Warning", "Cannot use 'predefined_classes' as a preset name.")
+            return
+            
+        src_path = os.path.join("data", "predefined_classes.txt")
+        dst_path = os.path.join("data", new_name)
+        
+        if os.path.exists(dst_path):
+            if not messagebox.askyesno("Overwrite?", f"The file '{new_name}' already exists. Overwrite?"):
+                return
+        
+        try:
+            shutil.copy2(src_path, dst_path)
+            messagebox.showinfo("Success", f"Saved current classes as {new_name}!")
+            self.refresh_preset_list()
+            self.save_preset_entry.delete(0, tk.END)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save preset: {e}")
 
 
     def capture_key(self, button, action):
