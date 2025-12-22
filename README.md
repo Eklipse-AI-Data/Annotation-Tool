@@ -1,50 +1,47 @@
-# AnnotationTool
+# AnnotationTool (Midnight Glass)
 
-A powerful, feature-rich YOLO annotation tool with an Eclipse-inspired dark theme. Built for efficient image annotation with advanced features like crosshair cursor, grid lines, class management, and template-based drawing.
+A powerful, feature-rich YOLO annotation tool with a premium "Midnight Glass" flat dark theme. Built for high-speed image annotation with advanced features like crosshair cursor, grid lines, class management, game presets, and batch operations.
 
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
+## Highlights
+
+### 🎨 Midnight Glass UI
+- **Modern Flat Dark Theme**: Professional, high-contrast interface designed for long labeling sessions.
+- **Glassmorphic Elements**: Subtle transparencies and sleek borders for a premium feel.
+- **Responsive Canvas**: Ultra-smooth zooming and panning even with high-resolution images.
+
+### 🎮 Game Presets & Class Management
+- **Game Presets**: Instant switching between different class sets (e.g., Fortnite, Warzone, Arc Raiders) via `Settings > Game Presets`.
+- **Dynamic Class Editor**: Add, remove, and reorder classes through a dedicated GUI.
+- **Automatic Remapping**: All annotation files are automatically updated when classes are modified or reordered.
+- **Backups**: Automatic timestamped backups are created before any major class change.
+
+### ⚙️ Power Tools
+- **Batch Operations**: Replace all instances of one Class ID with another across your entire dataset in seconds.
+- **Search & Filtering**: Search through class lists and filter your image set to show only images containing specific labels.
+- **Template Mode**: Define standard box sizes for repeatable object types to stamp annotations instantly.
+
 ## Features
 
 ### 🎯 Visual Drawing Aids
-- **Crosshair Cursor**: Automatically appears when a class is selected for precise box placement
-- **Grid Lines**: Green dashed lines follow your mouse (vertical & horizontal) for perfect alignment
-- **Template Mode**: Create reusable box templates with predefined dimensions
-- **Idle Mode**: Press Escape to deselect class and remove visual cues
+- **Crosshair Cursor**: High-precision targeting for box placement.
+- **Grid Lines**: Vertical and horizontal dashed lines follow the mouse for perfect alignment.
+- **Idle Mode**: Press `Escape` to enter "Peaceful Mode," removing visual helpers for simple image review.
 
 ### 📦 Annotation Capabilities
-- **YOLO Format**: Full support for YOLO bounding box format (normalized coordinates)
-- **Multi-Box Selection**: Select and manipulate multiple boxes simultaneously
-- **Copy & Paste**: Duplicate annotations across images (Ctrl+C / Ctrl+V)
-- **Box Manipulation**: Move, resize (corner handles), and delete boxes with ease
-- **Auto-Save**: Automatically save annotations when switching images
-
-### 🎨 Class Management
-- **Dynamic Class Editor**: Add, remove, and reorder classes through Settings
-- **Automatic Remapping**: When classes are modified, all annotation files are automatically updated
-- **Backup System**: Automatic timestamped backups before making class changes
-- **Color-Coded Classes**: Each class gets a distinct color for easy identification
-- **Template Sizes**: Set default width/height for each class
-
-### ⚙️ Advanced Features
-- **Zoom & Pan**: Ctrl+MouseWheel to zoom, Middle-click to pan
-- **Scrollbars**: Navigate large images with horizontal and vertical scrollbars
-- **Configurable Keybindings**: Customize all keyboard shortcuts through Settings
-- **Image Resolution Helper**: Optional downscaling for faster annotation of high-res images
-- **Dark Theme**: Eclipse-inspired UI for reduced eye strain
-
-### 🖥️ User Interface
-- **Dual Sidebars**: Class list on left, box labels on right (toggle with button)
-- **File Browser**: Quick navigation through image dataset
-- **Box List**: View and select all annotations in current image
-- **Status Display**: Current image index and filename in title bar
+- **YOLO Format**: Native support for normalized YOLO `.txt` files.
+- **Multi-Box Interaction**: Select multiple boxes to move, delete, or reassign classes in bulk.
+- **Clipboard Support**: `Ctrl+C` and `Space` (or `Ctrl+V`) to quickly duplicate annotations across frames.
+- **Box Manipulation**: Dedicated corner handles for precise resizing and smooth dragging.
+- **Auto-Save**: Changes are saved instantly as you move through your dataset.
 
 ## Installation
 
 ### Prerequisites
 - Python 3.8 or higher
-- pip package manager
+- `Pillow` library
 
 ### Setup
 
@@ -68,149 +65,67 @@ python main.py
 
 ### Basic Workflow
 
-1. **Open Images**: Click "Open Images" and select your image directory
-2. **Select Class**: Click a class from the list (crosshair cursor appears)
-3. **Draw Boxes**: 
-   - Click and drag to draw a box
-   - OR click once to stamp a template box
-4. **Adjust Boxes**: Click box to select, then drag to move or use corner handles to resize
-5. **Save**: Annotations auto-save when switching images (or manually save)
+1. **Open Images**: Click "Open Images" and select your image directory.
+2. **Setup Classes**: Go to `Settings > Game Presets` to load a predefined game file or create your own.
+3. **Select Class**: Click a class from the left sidebar list.
+4. **Draw Boxes**: 
+   - Click and drag for custom sizes.
+   - OR click once to use your defined **Template**.
+5. **Navigate**: Use keyboard shortcuts to flip through images; they will auto-save.
 
-### Keyboard Shortcuts (Default)
+### Keyboard Shortcuts (Latest Defaults)
 
 | Action | Shortcut |
 |--------|----------|
 | Next Image | `D` or `→` |
 | Previous Image | `A` or `←` |
-| Cycle Class | `W` |
-| Delete Box | `Delete` |
+| Cycle Class | `Down Arrow` |
+| Delete Box | `Q` or `Delete` |
 | Copy Boxes | `Ctrl+C` |
-| Paste Boxes | `Ctrl+V` |
+| Paste Boxes | `Space` or `Ctrl+V` |
 | Edit Box Class | `Ctrl+E` |
 | Deselect Class (Idle) | `Escape` |
 
-*All shortcuts are customizable in Settings → Keybindings*
+*Note: You can customize every single key in Settings → Keybindings.*
 
 ## Features Guide
 
-### Creating Templates
+### 📂 Game Presets (Switching Games)
+If you work on multiple games, you don't need to manually rename files:
+1. Open **Settings** (Bottom Left).
+2. Go to the **Game Presets** tab.
+3. Select a game from the list (sourced from the `data/` folder).
+4. Click **Load Selected Game**. The tool will offer to backup your current `predefined_classes.txt` first.
 
-1. Select a class
-2. Click "Create Template"
-3. Draw a box with your desired dimensions
-4. The class will remember this size for quick stamping
+### 🔄 Batch Replacing IDs
+Found out you labeled "Enemy" as ID 0 when it should have been ID 5?
+1. Open **Settings** → **Batch Operations**.
+2. Select the "Old ID" (0) and the "New ID" (5).
+3. Click **Execute**. The tool will scan all `.txt` files in your output directory and update them instantly.
 
-### Managing Classes
-
-1. Click "Settings" → "Class Management" tab
-2. **Add**: Enter name and click "Add Class"
-3. **Remove**: Select class(es) and click "Remove Selected"
-4. **Reorder**: Use "Move Up" / "Move Down" buttons
-5. **Apply**: Click "Apply Changes" to update all annotation files
-
-> ⚠️ **Important**: Removing or reordering classes will automatically update all `.txt` files in your image directory. A backup is created before changes.
-
-### Using Grid Lines
-
-1. Select any class from the list
-2. Move your mouse over the canvas
-3. Green crosshair grid lines appear to help align boxes
-4. Press `Escape` to remove grid lines (enters Idle mode)
-
-### Zoom and Pan
-
-- **Zoom**: Hold `Ctrl` + scroll mouse wheel
-- **Pan**: Click and drag with middle mouse button
-- **Reset**: Reload the image to reset zoom/pan
+### 🔍 Filtering Images by Class
+Working on a dataset of 10,000 images but only want to see "Kill Feeds"?
+1. Select the class in the **Filter** dropdown above the image list.
+2. Click **Filter**.
+3. The image list will now only show frames containing that specific label.
 
 ## File Structure
 
 ```
 AnnotationTool/
 ├── main.py                          # Application entry point
-├── data/
-│   └── predefined_classes.txt       # Class definitions (one per line)
+├── data/                            # Game class presets (.txt files)
 ├── src/
-│   ├── __init__.py
-│   ├── app.py                       # Main application logic
-│   ├── ui_components.py             # Dark theme UI components
-│   └── utils.py                     # Helper functions (YOLO parsing, etc.)
-└── config.json                      # Keybinding configuration (auto-generated)
+│   ├── app.py                       # Main application logic (UI & Logic)
+│   ├── ui_components.py             # Midnight Glass theme components
+│   └── utils.py                     # YOLO parsing, backups, & image processing
+└── config.json                      # Your personalized settings/keybindings
 ```
-
-## YOLO Format
-
-Annotations are saved in YOLO format:
-```
-<class_id> <x_center> <y_center> <width> <height>
-```
-
-All coordinates are normalized (0-1 range):
-- `class_id`: Integer index from predefined_classes.txt
-- `x_center`, `y_center`: Center point of bounding box
-- `width`, `height`: Box dimensions
-
-Example:
-```
-0 0.5 0.5 0.2 0.3
-1 0.3 0.7 0.15 0.25
-```
-
-## Configuration
-
-### Predefined Classes
-
-Edit `data/predefined_classes.txt` (one class per line):
-```
-blue_ace
-blue_baron
-blue_dragon
-health_bar_high
-health_bar_low
-map
-victory
-defeat
-```
-
-Or use Settings → Class Management for a GUI editor.
-
-### Keybindings
-
-Keybindings are stored in `config.json`. Use Settings → Keybindings to customize.
-
-## Tips & Tricks
-
-- **Batch Annotation**: Use Copy/Paste to duplicate boxes across similar images
-- **Template Workflow**: Create templates for common object sizes to speed up annotation
-- **Idle Mode**: Deselect class (Escape) to navigate without accidentally drawing boxes
-- **Grid Lines**: Use for aligning UI elements or objects that need precise positioning
-- **Auto-Save**: Keep enabled to never lose work when switching images
-
-## Troubleshooting
-
-### Grid lines not appearing
-- Make sure a class is selected (not in Idle mode)
-- Check that you're moving the mouse over the canvas area
-
-### Annotations not saving
-- Verify "Auto Save" is checked in the sidebar
-- Ensure output directory is set (defaults to image directory)
-- Check file permissions in the output directory
-
-### Classes not updating
-- After modifying `predefined_classes.txt`, restart the application
-- Or use Settings → Class Management → Apply Changes
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit pull requests or open issues for bugs and feature requests.
+Contributions are welcome! This tool is optimized for professional gaming dataset creators.
 
 ## License
 
 This project is licensed under the MIT License.
-
-## Acknowledgments
-
-- Built with Python and Tkinter
-- Inspired by Eclipse IDE's dark theme
-- Designed for YOLO object detection workflows
