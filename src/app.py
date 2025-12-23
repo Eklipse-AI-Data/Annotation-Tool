@@ -59,6 +59,13 @@ class AnnotationApp:
         self.move_mode = False
         self.move_box_index = -1
         
+        # Batch Resize State
+        self.batch_resize_target_idx = None
+        self.batch_resize_template_x = None
+        self.batch_resize_template_y = None
+        self.batch_resize_template_w = None
+        self.batch_resize_template_h = None
+        
         self.auto_save = tk.BooleanVar(value=True)
         self.show_labels = tk.BooleanVar(value=True)
         self.show_right_sidebar = tk.BooleanVar(value=True)
@@ -365,8 +372,12 @@ class AnnotationApp:
         # Tab 3: Batch Operations
         batch_ops_tab = DarkFrame(notebook)
         notebook.add(batch_ops_tab, text="Batch Operations")
+
+        # Tab 4: Batch Resize
+        batch_resize_tab = DarkFrame(notebook)
+        notebook.add(batch_resize_tab, text="Batch Resize")
         
-        # Tab 4: Game Presets
+        # Tab 5: Game Presets
         game_presets_tab = DarkFrame(notebook)
         notebook.add(game_presets_tab, text="Game Presets")
         
@@ -378,6 +389,9 @@ class AnnotationApp:
         
         # Setup Batch Operations Tab
         self.setup_batch_operations_tab(batch_ops_tab)
+
+        # Setup Batch Resize Tab
+        self.setup_batch_resize_tab(batch_resize_tab)
 
         # Setup Game Presets Tab
         self.setup_game_presets_tab(game_presets_tab)
@@ -858,6 +872,186 @@ class AnnotationApp:
         # Reload current image to reflect changes
         if self.current_image_index != -1:
             self.load_image(self.current_image_index)
+
+    def setup_batch_resize_tab(self, parent):
+        """Setup the batch resize tab for updating box dimensions folder-wide"""
+        DarkLabel(parent, text="Batch Resize Class", font=("Segoe UI", 12, "bold")).pack(pady=10)
+        
+        # Instructions
+        info_text = "Apply a consistent width and height to all instances of a class in the current directory.\n1. Copy a box (Ctrl+C) to use as a template.\n2. Select the target class and click 'Grab Template'.\n3. Execute to update all files."
+        DarkLabel(parent, text=info_text, wraplength=550, fg=THEME['fg_text']).pack(pady=5)
+        
+        # Warning
+        warning_frame = DarkFrame(parent, bg="#3d2a00")
+        warning_frame.pack(fill=tk.X, padx=10, pady=10)
+        DarkLabel(warning_frame, text="⚠ Warning: This will modify all annotation files in the current directory!", 
+                 fg="#ffcc00", font=("Segoe UI", 9, "bold"), bg="#3d2a00").pack(pady=5)
+        
+        # Main container
+        main_frame = DarkFrame(parent)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Template Display
+        template_frame = DarkFrame(main_frame)
+        template_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        DarkLabel(template_frame, text="Current Template:", font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        self.batch_resize_template_label = DarkLabel(template_frame, text="Template: [Not Set]", 
+                                                   fg=THEME['fg_highlight'], wraplength=550)
+        self.batch_resize_template_label.pack(anchor="w", padx=10)
+        
+        DarkButton(template_frame, text="Grab Template from Clipboard (Ctrl+C box)", command=self.grab_batch_resize_template,
+                  bg=THEME['button_bg'], fg=THEME['fg_highlight']).pack(fill=tk.X, pady=5)
+        
+        # Class Selection
+        DarkLabel(main_frame, text="Target Class to Resize:", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(10, 5))
+        
+        list_container = DarkFrame(main_frame)
+        list_container.pack(fill=tk.BOTH, expand=True)
+        
+        self.batch_resize_listbox = DarkListbox(list_container, height=8)
+        self.batch_resize_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        br_scrollbar = tk.Scrollbar(list_container, orient=tk.VERTICAL, command=self.batch_resize_listbox.yview)
+        br_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.batch_resize_listbox.configure(yscrollcommand=br_scrollbar.set)
+        
+        # Populate listbox
+        for i, cls in enumerate(self.classes):
+            self.batch_resize_listbox.insert(tk.END, f"{cls['id']}: {cls['name']}")
+            
+        DarkButton(main_frame, text="Select Target Class", command=self.submit_resize_class,
+                  bg=THEME['button_bg'], fg=THEME['fg_highlight']).pack(fill=tk.X, pady=5)
+        
+        self.batch_resize_selected_label = DarkLabel(main_frame, text="Selected Target: None", 
+                                                   fg="#00ff00", font=("Segoe UI", 9, "bold"))
+        self.batch_resize_selected_label.pack(anchor="w", pady=5)
+        
+        # Execute button
+        DarkButton(main_frame, text="Execute Batch Resize", command=self.execute_batch_resize,
+                  bg=THEME['accent'], fg=THEME['fg_highlight'], font=("Segoe UI", 10, "bold")).pack(fill=tk.X, pady=15)
+
+    def grab_batch_resize_template(self):
+        """Set the resize template from the current clipboard"""
+        if not self.clipboard:
+            messagebox.showwarning("Warning", "Clipboard is empty. Please copy a box first (Ctrl+C).")
+            return
+            
+        box = self.clipboard[0]
+        self.batch_resize_template_x = box['x_center']
+        self.batch_resize_template_y = box['y_center']
+        self.batch_resize_template_w = box['w']
+        self.batch_resize_template_h = box['h']
+        
+        class_name = "Unknown"
+        class_info = next((c for c in self.classes if c['id'] == box['class_id']), None)
+        if class_info: class_name = class_info['name']
+        
+        text = f"Template: {class_name} | Pos: ({self.batch_resize_template_x:.3f}, {self.batch_resize_template_y:.3f}) | Size: {self.batch_resize_template_w:.3f} x {self.batch_resize_template_h:.3f}"
+        self.batch_resize_template_label.config(text=text)
+        
+        # Auto-select the class in the listbox if it matches
+        for i, cls in enumerate(self.classes):
+            if cls['id'] == box['class_id']:
+                self.batch_resize_listbox.selection_clear(0, tk.END)
+                self.batch_resize_listbox.selection_set(i)
+                self.batch_resize_listbox.see(i)
+                self.submit_resize_class()
+                break
+
+    def submit_resize_class(self):
+        """Submit the selected class for resizing"""
+        selection = self.batch_resize_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("Warning", "Please select a class from the list.")
+            return
+        
+        self.batch_resize_target_idx = selection[0]
+        cls_name = self.classes[self.batch_resize_target_idx]['name']
+        self.batch_resize_selected_label.config(text=f"Selected Target: {cls_name}")
+
+    def execute_batch_resize(self):
+        """Execute the batch resize operation"""
+        if not self.image_dir:
+            messagebox.showerror("Error", "No directory loaded.")
+            return
+            
+        if self.batch_resize_target_idx is None:
+            messagebox.showwarning("Warning", "Please select a target class.")
+            return
+            
+        if self.batch_resize_template_w is None:
+            messagebox.showwarning("Warning", "Please grab a template size first.")
+            return
+
+        target_class_id = self.classes[self.batch_resize_target_idx]['id']
+        target_name = self.classes[self.batch_resize_target_idx]['name']
+        new_x = self.batch_resize_template_x
+        new_y = self.batch_resize_template_y
+        new_w = self.batch_resize_template_w
+        new_h = self.batch_resize_template_h
+        
+        txt_files = [f for f in os.listdir(self.image_dir) if f.lower().endswith('.txt') and f != 'classes.txt']
+        if not txt_files:
+            messagebox.showinfo("Info", "No annotation files found.")
+            return
+            
+        confirm_msg = f"Batch Sync Class Location & Size\n\n"
+        confirm_msg += f"Target Class: {target_name} (ID {target_class_id})\n"
+        confirm_msg += f"New Location: ({new_x:.4f}, {new_y:.4f})\n"
+        confirm_msg += f"New Dimensions: {new_w:.4f} x {new_h:.4f}\n\n"
+        confirm_msg += f"Files to process: {len(txt_files)}\n"
+        confirm_msg += "A backup will be created. Continue?"
+        
+        if not messagebox.askyesno("Confirm Batch Resize", confirm_msg):
+            return
+            
+        # Backup
+        from src.utils import backup_annotations
+        backup_path = backup_annotations(self.image_dir)
+        if not backup_path and not messagebox.askyesno("Warning", "Backup failed. Continue anyway?"):
+            return
+            
+        # Execute
+        count = 0
+        files_modified = 0
+        
+        for filename in txt_files:
+            file_path = os.path.join(self.image_dir, filename)
+            try:
+                with open(file_path, 'r') as f:
+                    lines = f.readlines()
+                
+                new_lines = []
+                modified = False
+                for line in lines:
+                    parts = line.strip().split()
+                    if len(parts) >= 5:
+                        try:
+                            cid = int(parts[0])
+                            if cid == target_class_id:
+                                # Update location and size
+                                parts[1] = f"{new_x:.6f}"
+                                parts[2] = f"{new_y:.6f}"
+                                parts[3] = f"{new_w:.6f}"
+                                parts[4] = f"{new_h:.6f}"
+                                new_lines.append(" ".join(parts) + "\n")
+                                modified = True
+                                count += 1
+                            else:
+                                new_lines.append(line)
+                        except ValueError: new_lines.append(line)
+                    else: new_lines.append(line)
+                    
+                if modified:
+                    with open(file_path, 'w') as f:
+                        f.writelines(new_lines)
+                    files_modified += 1
+            except Exception as e:
+                print(f"Error processing {filename}: {e}")
+                
+        messagebox.showinfo("Success", f"Batch Resize Complete!\nFiles modified: {files_modified}\nLabels updated: {count}")
+        if self.current_image_index != -1: self.load_image(self.current_image_index)
 
     def setup_game_presets_tab(self, parent):
         """Setup the game presets tab for switching class files"""
