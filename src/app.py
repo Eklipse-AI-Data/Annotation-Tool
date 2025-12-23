@@ -1210,16 +1210,13 @@ class AnnotationApp:
         name, _ = os.path.splitext(filename)
         txt_path = os.path.join(self.output_dir, name + ".txt")
         
-        # Filter boxes to ensure valid classes
-        valid_boxes = [b for b in self.boxes if any(c['id'] == b['class_id'] for c in self.classes) or b['class_id'] == -1]
+        # Filter out only unlabeled boxes (class_id == -1), preserve all valid annotations
+        # This preserves labels with class IDs not in predefined_classes.txt
+        final_boxes = [b for b in self.boxes if b['class_id'] != -1]
         
-        # Only save if we have boxes or file exists (to clear it)
-        if valid_boxes or os.path.exists(txt_path):
-             # We should probably filter out -1 (Unlabeled) before saving to YOLO?
-             # Standard YOLO doesn't support -1. Let's warn or skip?
-             # For now, let's skip -1 classes.
-             final_boxes = [b for b in valid_boxes if b['class_id'] != -1]
-             save_yolo(txt_path, final_boxes)
+        # Save if we have boxes or file exists (to update/clear it)
+        if final_boxes or os.path.exists(txt_path):
+            save_yolo(txt_path, final_boxes)
 
     # --- Canvas Drawing ---
     def redraw_canvas(self):
@@ -1844,12 +1841,44 @@ class AnnotationApp:
     def next_image(self):
         if self._is_input_focused(): return
         if self.image_list:
+            # Warn if auto-save is off and there are boxes
+            if not self.auto_save.get() and self.boxes:
+                response = messagebox.askyesnocancel(
+                    "Auto-Save is OFF",
+                    "Auto-Save is currently OFF.\n\n"
+                    "Do you want to save the current annotations before moving to the next image?\n\n"
+                    "• Yes = Save and continue\n"
+                    "• No = Don't save and continue\n"
+                    "• Cancel = Stay on current image"
+                )
+                if response is True:  # Yes
+                    self.save_annotations()
+                elif response is None:  # Cancel
+                    return
+                # False (No) = continue without saving
+            
             new_idx = (self.current_image_index + 1) % len(self.image_list)
             self.load_image(new_idx)
 
     def prev_image(self):
         if self._is_input_focused(): return
         if self.image_list:
+            # Warn if auto-save is off and there are boxes
+            if not self.auto_save.get() and self.boxes:
+                response = messagebox.askyesnocancel(
+                    "Auto-Save is OFF",
+                    "Auto-Save is currently OFF.\n\n"
+                    "Do you want to save the current annotations before moving to the previous image?\n\n"
+                    "• Yes = Save and continue\n"
+                    "• No = Don't save and continue\n"
+                    "• Cancel = Stay on current image"
+                )
+                if response is True:  # Yes
+                    self.save_annotations()
+                elif response is None:  # Cancel
+                    return
+                # False (No) = continue without saving
+            
             new_idx = (self.current_image_index - 1) % len(self.image_list)
             self.load_image(new_idx)
             
