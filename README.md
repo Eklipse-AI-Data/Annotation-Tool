@@ -1,4 +1,4 @@
-# AnnotationTool (Midnight Glass)
+# AnnotationTool
 
 A powerful, feature-rich YOLO annotation tool with a professional MVC architecture and premium themes like "Midnight Glass". Built for high-speed image annotation with advanced features like crosshair cursor, grid lines, class management, game presets, image preloading, and batch operations.
 
@@ -9,9 +9,7 @@ A powerful, feature-rich YOLO annotation tool with a professional MVC architectu
 
 ### 🎨 Premium UI & Themes
 
-- **Midnight Glass UI**: Modern flat dark theme designed for long labeling sessions.
 - **Multi-Theme Support**: Choose from various professional palettes (Midnight Glass, Anthropic, Emerald, Ruby, Amber, Frost).
-- **Glassmorphic Elements**: Subtle transparencies and sleek borders for a premium feel.
 - **Responsive Canvas**: Ultra-smooth zooming and panning even with high-resolution images.
 
 ### 🎮 Game Presets & Class Management
