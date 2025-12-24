@@ -7,7 +7,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from PIL import Image
 from src.utils import (natural_sort_key, save_config, save_classes, load_classes,
                        create_class_mapping, update_annotation_file, backup_annotations,
-                       normalize_box, denormalize_box)
+                       normalize_box, denormalize_box, get_recent_projects)
 from src.ui_components import DarkFrame, DarkLabel, DarkButton, DarkEntry, THEME
 
 class AnnotationController:
@@ -18,12 +18,54 @@ class AnnotationController:
         self.bind_events()
         self.init_state()
         self.redraw_timer = None
+        self.autosave_timer_id = None
+        
+        # Start auto-save timer for crash recovery
+        self.start_autosave_timer()
+
+    def is_focus_on_entry(self):
+        """Check if focus is currently on an Entry widget (e.g., search box)"""
+        focused = self.view.root.focus_get()
+        return isinstance(focused, (tk.Entry, ttk.Entry))
+
+    def start_autosave_timer(self):
+        """Start the auto-save timer for crash recovery (runs every 30 seconds)."""
+        self.autosave_session()
+        # Schedule next autosave
+        self.autosave_timer_id = self.view.root.after(30000, self.start_autosave_timer)
+    
+    def autosave_session(self):
+        """Auto-save current state for crash recovery."""
+        try:
+            if self.model.auto_save.get() and self.model.current_image_index != -1:
+                self.model.save_annotations()
+            self.model.save_session()
+        except Exception as e:
+            print(f"Autosave error: {e}")
 
     def init_state(self):
         # Update UI with initial model state
-        self.view.update_dir_label(self.model.image_dir)
         self.update_class_list()
         self.update_filter_combo()
+        self.update_recent_projects_menu()
+        
+        # Verify session directories exist before loading
+        if self.model.image_dir and not os.path.isdir(self.model.image_dir):
+            messagebox.showwarning(
+                "Session Warning",
+                f"The last image directory no longer exists:\n{self.model.image_dir}\n\nPlease select a new directory."
+            )
+            self.model.image_dir = ''
+            self.model.current_image_index = -1
+            
+        if self.model.output_dir and not os.path.isdir(self.model.output_dir):
+            messagebox.showwarning(
+                "Session Warning", 
+                f"The last output directory no longer exists:\n{self.model.output_dir}\n\nPlease select a new output directory."
+            )
+            self.model.output_dir = ''
+        
+        self.view.update_dir_label(self.model.image_dir)
         
         if self.model.image_dir:
             self.load_images()
@@ -53,11 +95,16 @@ class AnnotationController:
         self.view.set_output_btn.configure(command=self.select_output_dir)
         self.view.toggle_left_btn.configure(command=self.toggle_left_sidebar)
         self.view.toggle_sidebar_btn.configure(command=self.toggle_right_sidebar)
+        self.view.undo_btn.configure(command=self.undo)
+        self.view.redo_btn.configure(command=self.redo)
         self.view.settings_btn.configure(command=self.open_settings_dialog)
         self.view.filter_btn.configure(command=self.apply_image_filter)
         self.view.clear_filter_btn.configure(command=self.clear_image_filter)
         self.view.copy_btn.configure(command=self.copy_boxes)
         self.view.paste_btn.configure(command=self.paste_boxes)
+        self.view.validate_btn.configure(command=self.show_validation_dialog)
+        self.view.shortcut_help_btn.configure(command=self.toggle_shortcut_overlay)
+        self.view.load_recent_btn.configure(command=self.load_recent_project)
         
         # Listbox Binds
         self.view.class_listbox.bind('<<ListboxSelect>>', self.on_class_select)
@@ -70,37 +117,47 @@ class AnnotationController:
         self.view.canvas.bind('<ButtonRelease-1>', self.on_canvas_release)
         self.view.canvas.bind('<Motion>', self.on_canvas_motion)
         
+        # Make canvas focusable so shortcuts work after clicking on it
+        self.view.canvas.configure(takefocus=True)
+        
         # Panning and Zooming
         self.view.canvas.bind('<Button-3>', self.start_pan)
         self.view.canvas.bind('<B3-Motion>', self.on_pan)
         self.view.canvas.bind('<MouseWheel>', self.on_zoom)
         
         # Keyboard Shortcuts (using config)
+        # Wrapper to only trigger shortcuts when not typing in an Entry widget
+        def shortcut(action):
+            def handler(e):
+                if not self.is_focus_on_entry():
+                    return action()
+            return handler
+        
         root = self.view.root
         cfg = self.model.config
-        root.bind(cfg['prev_image'], lambda e: self.prev_image())
-        root.bind(cfg['next_image'], lambda e: self.next_image())
-        root.bind(cfg['delete_box'], lambda e: self.delete_selected_box())
-        root.bind(cfg['copy'], lambda e: self.copy_boxes())
-        root.bind(cfg['paste'], lambda e: self.paste_boxes())
-        root.bind(cfg['cycle_class'], lambda e: self.cycle_class())
-        root.bind(cfg['edit_class'], lambda e: self.edit_selected_box_class())
-        root.bind(cfg['deselect'], lambda e: self.deselect_class())
-        root.bind(cfg['undo'], lambda e: self.undo())
-        root.bind(cfg['redo'], lambda e: self.redo())
+        root.bind(cfg['prev_image'], shortcut(self.prev_image))
+        root.bind(cfg['next_image'], shortcut(self.next_image))
+        root.bind(cfg['delete_box'], shortcut(self.delete_selected_box))
+        root.bind(cfg['copy'], shortcut(self.copy_boxes))
+        root.bind(cfg['paste'], shortcut(self.paste_boxes))
+        root.bind(cfg['cycle_class'], shortcut(self.cycle_class))
+        root.bind(cfg['edit_class'], shortcut(self.edit_selected_box_class))
+        root.bind(cfg['deselect'], lambda e: self.deselect_class())  # Escape always works (to leave entry)
+        root.bind(cfg['undo'], shortcut(self.undo))
+        root.bind(cfg['redo'], shortcut(self.redo))
         
         # Secondary Navigation
-        root.bind("<Left>", lambda e: self.prev_image())
-        root.bind("<Right>", lambda e: self.next_image())
+        root.bind("<Left>", shortcut(self.prev_image))
+        root.bind("<Right>", shortcut(self.next_image))
         
         # Bounding Box Presets shortcuts - robust handling for various layouts and Numpad
         for i in range(1, 10):
             # Standard number keys
-            root.bind(f"<Control-Key-{i}>", lambda e, num=i: self.apply_preset(num))
-            root.bind(f"<Control-Shift-Key-{i}>", lambda e, num=i: self.save_preset(num))
+            root.bind(f"<Control-Key-{i}>", lambda e, num=i: self.apply_preset(num) if not self.is_focus_on_entry() else None)
+            root.bind(f"<Control-Shift-Key-{i}>", lambda e, num=i: self.save_preset(num) if not self.is_focus_on_entry() else None)
             # Numpad compatibility
-            root.bind(f"<Control-KP_{i}>", lambda e, num=i: self.apply_preset(num))
-            root.bind(f"<Control-Shift-KP_{i}>", lambda e, num=i: self.save_preset(num))
+            root.bind(f"<Control-KP_{i}>", lambda e, num=i: self.apply_preset(num) if not self.is_focus_on_entry() else None)
+            root.bind(f"<Control-Shift-KP_{i}>", lambda e, num=i: self.save_preset(num) if not self.is_focus_on_entry() else None)
             
         # Common shifted symbols for Ctrl+Shift+Number (specifically helps on Windows/Windows Layouts)
         shift_symbols = {
@@ -108,10 +165,14 @@ class AnnotationController:
             "asciicircum": 6, "ampersand": 7, "asterisk": 8, "parenleft": 9
         }
         for sym, num in shift_symbols.items():
-            root.bind(f"<Control-{sym}>", lambda e, n=num: self.save_preset(n))
+            root.bind(f"<Control-{sym}>", lambda e, n=num: self.save_preset(n) if not self.is_focus_on_entry() else None)
         
         # U key for unannotated filter toggle
-        root.bind("<u>", lambda e: self.toggle_unannotated_filter_key())
+        root.bind("<u>", shortcut(self.toggle_unannotated_filter_key))
+        
+        # ? key for shortcut overlay (both ? and / work)
+        root.bind("<question>", lambda e: self.toggle_shortcut_overlay() if not self.is_focus_on_entry() else None)
+        root.bind("<slash>", lambda e: self.toggle_shortcut_overlay() if not self.is_focus_on_entry() and (e.state & 0x0001) else None)
         
         # Search Bar Trace
         self.view.class_search_var.trace("w", self.filter_classes)
@@ -120,18 +181,50 @@ class AnnotationController:
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def select_image_dir(self):
-        directory = filedialog.askdirectory()
-        if directory:
+        path = filedialog.askdirectory(title="Select Image Directory")
+        if path:
             # Save current annotations before switching directories
             if self.model.current_image_index != -1 and self.model.auto_save.get():
                 self.model.save_annotations()
-                
-            self.model.image_dir = directory
+            
+            # Reset state
+            self.model.current_image_index = -1
+            self.model.boxes = []
+            self.model.selected_indices = set()
+            
+            # Ask user if they want to lower resolution
+            response = messagebox.askyesno(
+                "Lower Resolution?",
+                "Do you want to lower the resolution of images before loading?\n\n"
+                "This will create a new directory with '_lowres' suffix containing "
+                "resized images (720px -> 1920x1080).\n\n"
+                "Original images will remain untouched."
+            )
+            
+            if response:
+                messagebox.showinfo("Processing", "Processing images... This may take a moment.")
+                lowres_path = resize_images_to_lowres(path)
+                if lowres_path:
+                    self.model.image_dir = lowres_path
+                    messagebox.showinfo("Success", f"Images processed successfully!\n\nLoading from: {os.path.basename(lowres_path)}")
+                else:
+                    messagebox.showerror("Error", "Failed to process images. Loading original directory instead.")
+                    self.model.image_dir = path
+            else:
+                self.model.image_dir = path
+
             if not self.model.output_dir:
-                self.model.output_dir = directory
-            self.view.update_dir_label(directory)
+                self.model.output_dir = path
+            
+            self.view.update_dir_label(self.model.image_dir)
             self.load_images()
             self.load_image(0)
+            
+            # Add to recent projects
+            self.model.add_to_recent_projects()
+            self.update_recent_projects_menu()
+            
+            self.model.save_session()
 
     def select_output_dir(self):
         directory = filedialog.askdirectory()
@@ -171,7 +264,15 @@ class AnnotationController:
             path = os.path.join(self.model.image_dir, filename)
             
             try:
-                self.model.current_image_pil = Image.open(path)
+                # Try to get from cache first
+                cached_image = self.model.image_preloader.get(path)
+                if cached_image:
+                    self.model.current_image_pil = cached_image
+                else:
+                    self.model.current_image_pil = Image.open(path)
+                    self.model.current_image_pil.load()  # Force load into memory
+                    self.model.image_preloader.put(path, self.model.current_image_pil)
+                
                 # Reset view cache
                 self.view.cached_dims = None
                 self.view.cached_image_obj = None
@@ -184,6 +285,14 @@ class AnnotationController:
                 
                 # Redraw
                 self.view.redraw_canvas()
+                self.view.update_box_list()
+                
+                # Preload adjacent images in background
+                self.preload_adjacent_images()
+                
+                # Update validation indicator (lightweight check)
+                warnings = self.model.validate_current_annotations()
+                self.view.update_warning_indicator(warnings)
                 
             except Exception as e:
                 print(f"Error loading image: {e}")
@@ -299,7 +408,7 @@ class AnnotationController:
         self.view.class_listbox.delete(0, tk.END)
         for i, (real_idx, c) in enumerate(self.model.filtered_classes):
             self.view.class_listbox.insert(tk.END, f"{c['id']}: {c['name']}")
-            self.view.class_listbox.itemconfig(i, fg=c['color'])
+            # self.view.class_listbox.itemconfig(i, fg=c['color']) # Removed coloring for clean theme
             if real_idx == self.model.current_class_index:
                 self.view.class_listbox.selection_set(i)
                 self.view.class_listbox.see(i)
@@ -327,12 +436,162 @@ class AnnotationController:
         self.view.progress_bar.set_value(count, total, text)
 
     def on_close(self):
+        # Cancel auto-save timer
+        if self.autosave_timer_id:
+            self.view.root.after_cancel(self.autosave_timer_id)
+        
         # Save current image if auto_save is on
         if self.model.current_image_index != -1 and self.model.auto_save.get():
             self.model.save_annotations()
             
         self.model.save_session()
         self.view.root.destroy()
+
+    def toggle_shortcut_overlay(self):
+        """Toggle the keyboard shortcut overlay."""
+        self.view.toggle_shortcut_overlay()
+    
+    def show_validation_dialog(self):
+        """Show validation results in a dialog."""
+        warnings = self.model.validate_current_annotations()
+        self.view.update_warning_indicator(warnings)
+        
+        if not warnings:
+            messagebox.showinfo("Validation", "✓ All annotations are valid!")
+            return
+        
+        # Create validation results dialog
+        top = tk.Toplevel(self.view.root)
+        top.title("Annotation Validation")
+        top.geometry("500x400")
+        top.configure(bg=THEME['bg_main'])
+        
+        DarkLabel(top, text="Validation Results", font=("Segoe UI", 14, "bold")).pack(pady=10)
+        
+        # Summary
+        error_count = sum(1 for w in warnings if w['severity'] == 'error')
+        warn_count = sum(1 for w in warnings if w['severity'] == 'warning')
+        info_count = sum(1 for w in warnings if w['severity'] == 'info')
+        
+        summary = f"Found: {error_count} errors, {warn_count} warnings, {info_count} info"
+        DarkLabel(top, text=summary, fg=THEME['button_highlight']).pack(pady=5)
+        
+        # Warnings list
+        list_frame = DarkFrame(top)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        scrollbar = tk.Scrollbar(list_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        listbox = tk.Listbox(list_frame, bg=THEME['list_bg'], fg=THEME['fg_text'],
+                            selectbackground=THEME['selection'], relief=tk.FLAT,
+                            font=(THEME['font_family_sans'], 10))
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        listbox.config(yscrollcommand=scrollbar.set)
+        scrollbar.config(command=listbox.yview)
+        
+        # Color mapping for severity
+        severity_colors = {
+            'error': '#FF4444',
+            'warning': '#FFD700',
+            'info': '#4CC9F0'
+        }
+        
+        for i, w in enumerate(warnings):
+            icon = {'error': '❌', 'warning': '⚠', 'info': 'ℹ'}.get(w['severity'], '•')
+            listbox.insert(tk.END, f" {icon} {w['message']}")
+        
+        # Select box on click
+        def on_select(event):
+            sel = listbox.curselection()
+            if sel and sel[0] < len(warnings):
+                box_idx = warnings[sel[0]]['box_index']
+                self.model.selected_indices = {box_idx}
+                self.view.redraw_canvas()
+                self.view.update_box_list()
+        
+        listbox.bind('<<ListboxSelect>>', on_select)
+        
+        DarkButton(top, text="Close", command=top.destroy).pack(pady=10)
+    
+    def preload_adjacent_images(self):
+        """Preload images adjacent to current image for faster navigation."""
+        if not self.model.image_list or self.model.current_image_index == -1:
+            return
+        
+        paths_to_preload = []
+        current_idx = self.model.current_image_index
+        
+        # Preload next 3 and previous 2 images
+        for offset in [1, 2, 3, -1, -2]:
+            idx = current_idx + offset
+            if 0 <= idx < len(self.model.image_list):
+                img_path = os.path.join(self.model.image_dir, self.model.image_list[idx])
+                paths_to_preload.append(img_path)
+        
+        self.model.image_preloader.preload(paths_to_preload)
+
+    def update_recent_projects_menu(self):
+        """Update the recent projects dropdown menu."""
+        self.model.recent_projects = get_recent_projects("session.json")
+        
+        if not self.model.recent_projects:
+            self.view.recent_projects_combo['values'] = ["No recent projects"]
+            return
+        
+        # Format: "ProjectName (image_dir)"
+        display_values = []
+        for p in self.model.recent_projects:
+            name = p.get('name', 'Unknown')
+            # Truncate path if too long
+            img_dir = p.get('image_dir', '')
+            if len(img_dir) > 40:
+                img_dir = "..." + img_dir[-37:]
+            display_values.append(f"{name}")
+        
+        self.view.recent_projects_combo['values'] = display_values
+        if display_values:
+            self.view.recent_projects_combo.set(display_values[0])
+    
+    def load_recent_project(self):
+        """Load a project from the recent projects list."""
+        selection_idx = self.view.recent_projects_combo.current()
+        
+        if selection_idx < 0 or selection_idx >= len(self.model.recent_projects):
+            messagebox.showwarning("Warning", "Please select a valid project.")
+            return
+        
+        project = self.model.recent_projects[selection_idx]
+        image_dir = project.get('image_dir', '')
+        output_dir = project.get('output_dir', '')
+        
+        # Validate directories exist
+        if not image_dir or not os.path.isdir(image_dir):
+            messagebox.showerror("Error", f"Image directory no longer exists:\n{image_dir}")
+            return
+        
+        # Save current annotations before switching
+        if self.model.current_image_index != -1 and self.model.auto_save.get():
+            self.model.save_annotations()
+        
+        # Reset state
+        self.model.current_image_index = -1
+        self.model.boxes = []
+        self.model.selected_indices = set()
+        self.model.image_preloader.clear()  # Clear cache for new project
+        
+        # Load new project
+        self.model.image_dir = image_dir
+        self.model.output_dir = output_dir if output_dir and os.path.isdir(output_dir) else image_dir
+        
+        self.view.update_dir_label(self.model.image_dir)
+        self.load_images()
+        
+        if self.model.image_list:
+            self.load_image(0)
+        
+        self.model.save_session()
+        self.view.update_status(f"Loaded project: {project.get('name', 'Unknown')}")
 
     # ==================== SETTINGS DIALOG ====================
 
@@ -341,6 +600,9 @@ class AnnotationController:
         top.title("Settings")
         top.geometry("600x600")
         top.configure(bg=THEME['bg_main'])
+        
+        # Store reference to the settings window
+        self.settings_window = top
         
         # Create Notebook (Tabbed Interface)
         notebook = ttk.Notebook(top)
@@ -371,14 +633,18 @@ class AnnotationController:
         notebook.add(themes_tab, text="Themes")
         
         # Setup Tabs
-        self.setup_keybindings_tab(keybindings_tab, top)
+        self.setup_keybindings_tab(keybindings_tab)
         self.setup_class_management_tab(class_mgmt_tab)
         self.setup_batch_operations_tab(batch_ops_tab)
         self.setup_game_presets_tab(game_presets_tab)
         self.setup_box_presets_tab(box_presets_tab)
         self.setup_themes_tab(themes_tab)
+        
+        # Global Save & Close button at the bottom (visible from all tabs)
+        save_btn = DarkButton(top, text="Save & Close", command=lambda: self.save_settings(top))
+        save_btn.pack(pady=10, padx=10, fill=tk.X)
 
-    def setup_keybindings_tab(self, parent, window):
+    def setup_keybindings_tab(self, parent):
         DarkLabel(parent, text="Configure Keybindings", font=("Segoe UI", 12, "bold")).pack(pady=10)
         
         canvas = tk.Canvas(parent, bg=THEME['bg_main'], highlightthickness=0)
@@ -392,15 +658,20 @@ class AnnotationController:
         canvas.pack(side="left", fill="both", expand=True, padx=10)
         scrollbar.pack(side="right", fill="y")
         
+        # Only show keybinding config items (exclude crosshair settings)
+        keybinding_keys = ['deselect', 'next_image', 'prev_image', 'cycle_class', 'delete_box', 
+                          'copy', 'paste', 'edit_class', 'undo', 'redo']
+        
         for action, key in self.model.config.items():
+            # Skip non-keybinding items
+            if action not in keybinding_keys:
+                continue
             row_frame = DarkFrame(scrollable_frame)
             row_frame.pack(fill=tk.X, pady=2)
             DarkLabel(row_frame, text=action.replace("_", " ").title()).pack(side=tk.LEFT, padx=5)
             btn = DarkButton(row_frame, text=key, width=15)
             btn.pack(side=tk.RIGHT, padx=5)
             btn.configure(command=lambda b=btn, a=action: self.capture_key(b, a))
-            
-        DarkButton(parent, text="Save & Close", command=lambda: self.save_settings(window)).pack(pady=10)
 
     def setup_class_management_tab(self, parent):
         DarkLabel(parent, text="Manage Classes", font=("Segoe UI", 12, "bold")).pack(pady=10)
@@ -417,7 +688,7 @@ class AnnotationController:
         list_container.pack(fill=tk.BOTH, expand=True)
         
         self.class_mgmt_listbox = tk.Listbox(list_container, bg=THEME['list_bg'], fg=THEME['fg_text'], 
-                                            selectbackground=THEME['selection'], relief=tk.FLAT, bd=0)
+                                            selectbackground=THEME['selection'], relief=tk.FLAT, bd=0, exportselection=False)
         self.class_mgmt_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         self.temp_classes = [c['name'] for c in self.model.classes]
@@ -443,23 +714,32 @@ class AnnotationController:
         selection_frame = DarkFrame(parent)
         selection_frame.pack(fill=tk.X, padx=10, pady=10)
         
-        self.batch_old_listbox = tk.Listbox(selection_frame, height=8, bg=THEME['list_bg'], fg=THEME['fg_text'])
+        self.batch_old_listbox = tk.Listbox(selection_frame, height=8, bg=THEME['list_bg'], fg=THEME['fg_text'], 
+                                         selectbackground=THEME['selection'], exportselection=False)
         self.batch_old_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
         
-        self.batch_new_listbox = tk.Listbox(selection_frame, height=8, bg=THEME['list_bg'], fg=THEME['fg_text'])
+        self.batch_new_listbox = tk.Listbox(selection_frame, height=8, bg=THEME['list_bg'], fg=THEME['fg_text'], 
+                                         selectbackground=THEME['selection'], exportselection=False)
         self.batch_new_listbox.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5)
         
-        for i, cls in enumerate(self.model.classes):
-            display_text = f"{cls['id']}: {cls['name']}"
-            self.batch_old_listbox.insert(tk.END, display_text)
-            self.batch_new_listbox.insert(tk.END, display_text)
+        self.refresh_batch_listboxes()
             
         DarkButton(parent, text="Execute Batch Replace", command=self.execute_batch_replace, bg=THEME['accent']).pack(pady=10)
+
+    def refresh_batch_listboxes(self):
+        if hasattr(self, 'batch_old_listbox') and hasattr(self, 'batch_new_listbox'):
+            self.batch_old_listbox.delete(0, tk.END)
+            self.batch_new_listbox.delete(0, tk.END)
+            for i, cls in enumerate(self.model.classes):
+                display_text = f"{cls['id']}: {cls['name']}"
+                self.batch_old_listbox.insert(tk.END, display_text)
+                self.batch_new_listbox.insert(tk.END, display_text)
 
     def setup_game_presets_tab(self, parent):
         DarkLabel(parent, text="Switch Game Classes", font=("Segoe UI", 12, "bold")).pack(pady=10)
         
-        self.preset_listbox = tk.Listbox(parent, bg=THEME['list_bg'], fg=THEME['fg_text'], selectbackground=THEME['selection'])
+        self.preset_listbox = tk.Listbox(parent, bg=THEME['list_bg'], fg=THEME['fg_text'], 
+                                         selectbackground=THEME['selection'], exportselection=False)
         self.preset_listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
         self.refresh_preset_list()
@@ -479,7 +759,7 @@ class AnnotationController:
         
         # Use a listbox to show status of slots
         self.box_presets_lb = tk.Listbox(container, bg=THEME['list_bg'], fg=THEME['fg_text'], 
-                                         selectbackground=THEME['selection'], relief=tk.FLAT, bd=0, height=10)
+                                         selectbackground=THEME['selection'], relief=tk.FLAT, bd=0, height=10, exportselection=False)
         self.box_presets_lb.pack(fill=tk.BOTH, expand=True)
         
         self.update_box_presets_list()
@@ -517,6 +797,7 @@ class AnnotationController:
         self.bind_events()
         window.destroy()
         messagebox.showinfo("Settings", "Settings saved!")
+        self.view.redraw_canvas()
 
     def capture_key(self, button, action):
         cap = tk.Toplevel(self.view.root)
@@ -596,15 +877,16 @@ class AnnotationController:
         
         class_mapping = create_class_mapping(old_classes, self.temp_classes)
         
-        if self.model.image_dir:
-            for f in os.listdir(self.model.image_dir):
+        if self.model.output_dir:
+            for f in os.listdir(self.model.output_dir):
                 if f.lower().endswith('.txt'):
-                    update_annotation_file(os.path.join(self.model.image_dir, f), class_mapping)
+                    update_annotation_file(os.path.join(self.model.output_dir, f), class_mapping, remove_unmapped=True)
         
         save_classes("data/predefined_classes.txt", self.temp_classes)
         self.model.classes = load_classes("data/predefined_classes.txt")
         self.update_class_list()
         self.update_filter_combo()
+        self.refresh_batch_listboxes()
         if self.model.current_image_index != -1:
             self.load_image(self.model.current_image_index)
         messagebox.showinfo("Success", "Classes updated!")
@@ -612,22 +894,97 @@ class AnnotationController:
     def execute_batch_replace(self):
         old_sel = self.batch_old_listbox.curselection()
         new_sel = self.batch_new_listbox.curselection()
-        if not old_sel or not new_sel: return
+        if not old_sel or not new_sel: 
+            messagebox.showwarning("Warning", "Please select both old and new classes.")
+            return
         
         old_id = self.model.classes[old_sel[0]]['id']
         new_id = self.model.classes[new_sel[0]]['id']
         
-        if not messagebox.askyesno("Confirm", f"Replace all ID {old_id} with {new_id}?"): return
+        old_name = self.model.classes[old_sel[0]]['name']
+        new_name = self.model.classes[new_sel[0]]['name']
+        
+        if old_id == new_id:
+            messagebox.showwarning("Warning", "Old and new class IDs are the same.")
+            return
+            
+        if not self.model.output_dir:
+            messagebox.showerror("Error", "No output directory (labels folder) loaded.")
+            return
+
+        txt_files = [f for f in os.listdir(self.model.output_dir) if f.lower().endswith('.txt')]
+        if not txt_files:
+            messagebox.showinfo("Info", "No annotation files found in the output directory.")
+            return
+            
+        confirm_msg = f"Replace all ID {old_id} ({old_name}) with {new_id} ({new_name})?\n\n"
+        confirm_msg += f"Directory: {self.model.output_dir}\n"
+        confirm_msg += f"Files to process: {len(txt_files)}\n"
+        confirm_msg += "A backup will be created before making changes."
+        
+        if not messagebox.askyesno("Confirm Batch Replace", confirm_msg): 
+            return
+        
+        # Create backup
+        backup_path = backup_annotations(self.model.output_dir)
+        if backup_path:
+            messagebox.showinfo("Backup Created", f"Backup created at: {os.path.basename(backup_path)}")
+        else:
+            if not messagebox.askyesno("Warning", "Failed to create backup. Continue anyway?"):
+                return
         
         mapping = {old_id: new_id}
-        if self.model.image_dir:
-            for f in os.listdir(self.model.image_dir):
-                if f.lower().endswith('.txt'):
-                    update_annotation_file(os.path.join(self.model.image_dir, f), mapping)
+        updated_count = 0
+        for f in txt_files:
+            if update_annotation_file(os.path.join(self.model.output_dir, f), mapping):
+                updated_count += 1
         
+        # Update in-memory boxes for the current image so auto-save doesn't overwrite our changes
+        for box in self.model.boxes:
+            if box['class_id'] == old_id:
+                box['class_id'] = new_id
+        
+        # Reload to refresh the display
         if self.model.current_image_index != -1:
-            self.load_image(self.model.current_image_index)
-        messagebox.showinfo("Success", "Batch replace complete!")
+            self.view.redraw_canvas()
+            self.view.update_box_list()
+            
+        messagebox.showinfo("Success", f"Batch replace complete! Updated {updated_count} files.")
+
+    def save_current_as_preset(self):
+        """Save the current predefined_classes.txt as a new named preset"""
+        new_name = simpledialog.askstring("Save Preset", "Enter a name for the new preset (e.g. fortnite):")
+        if not new_name:
+            return
+        
+        if not new_name.lower().endswith('.txt'):
+            new_name += ".txt"
+            
+        if new_name.lower() == 'predefined_classes.txt':
+            messagebox.showwarning("Warning", "Cannot use 'predefined_classes' as a preset name.")
+            return
+            
+        src_path = os.path.join("data", "predefined_classes.txt")
+        dst_path = os.path.join("data", new_name)
+        
+        if os.path.exists(dst_path):
+            if not messagebox.askyesno("Overwrite?", f"The file '{new_name}' already exists. Overwrite?"):
+                return
+        
+        try:
+            shutil.copy2(src_path, dst_path)
+            messagebox.showinfo("Success", f"Saved current classes as {new_name}!")
+            self.refresh_preset_list()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save preset: {e}")
+
+    def enter_template_mode(self):
+        """Toggle template mode (stamping boxes)"""
+        self.model.template_mode = not self.model.template_mode
+        if self.model.template_mode:
+            self.view.update_status("Template Mode: ON (Click to stamp default box)")
+        else:
+            self.view.update_status("Template Mode: OFF")
 
     def refresh_preset_list(self):
         self.preset_listbox.delete(0, tk.END)
@@ -646,6 +1003,7 @@ class AnnotationController:
             self.model.classes = load_classes("data/predefined_classes.txt")
             self.update_class_list()
             self.update_filter_combo()
+            self.refresh_batch_listboxes()
             if self.model.current_image_index != -1:
                 self.load_image(self.model.current_image_index)
             messagebox.showinfo("Success", "Preset loaded!")
@@ -664,6 +1022,7 @@ class AnnotationController:
         # 1. Check handles (priority)
         box_idx, handle_name = self.find_handle_at(x, y)
         if box_idx != -1 and box_idx in self.model.selected_indices:
+            self.model.save_state()
             self.model.resize_mode = True
             self.model.active_handle_index = handle_name
             self.model.active_box_index = box_idx
@@ -673,15 +1032,15 @@ class AnnotationController:
         # 2. Check for box selection
         clicked_box_idx = self.find_box_at(x, y)
         if clicked_box_idx != -1:
-            if event.state & 0x0001:  # Shift
+            if event.state & 0x1: # Shift key
                 if clicked_box_idx in self.model.selected_indices:
                     self.model.selected_indices.remove(clicked_box_idx)
                 else:
                     self.model.selected_indices.add(clicked_box_idx)
             else:
-                if clicked_box_idx not in self.model.selected_indices:
-                    self.model.selected_indices = {clicked_box_idx}
+                self.model.selected_indices = {clicked_box_idx}
             
+            self.model.save_state()
             self.model.move_mode = True
             self.model.active_box_index = clicked_box_idx
             self.model.start_x, self.model.start_y = cx, cy
@@ -762,6 +1121,9 @@ class AnnotationController:
         x = self.view.canvas.canvasx(event.x)
         y = self.view.canvas.canvasy(event.y)
         iw, ih = self.model.current_image_pil.size
+        
+        # Update crosshair during drag
+        self.view.draw_crosshair(x, y)
         
         # Clamp to image boundaries
         min_x = self.view.offset_x
@@ -868,6 +1230,7 @@ class AnnotationController:
         self.model.resize_mode = False
         self.model.move_mode = False
         self.view.redraw_canvas()
+        self.view.update_box_list()
 
     def stamp_box(self, x, y):
         if not self.model.current_image_pil: return
@@ -912,11 +1275,13 @@ class AnnotationController:
     def undo(self):
         if self.model.undo():
             self.view.redraw_canvas()
+            self.view.update_box_list()
             self.view.update_status("Action undone")
 
     def redo(self):
         if self.model.redo():
             self.view.redraw_canvas()
+            self.view.update_box_list()
             self.view.update_status("Action redone")
 
     def start_pan(self, event):
@@ -990,15 +1355,24 @@ class AnnotationController:
         return -1
 
     def find_handle_at(self, x, y):
-        # We need a halo to make it easier to click small handles
-        item = self.view.canvas.find_closest(x, y, halo=5)
-        tags = self.view.canvas.gettags(item)
-        for tag in tags:
-            if tag.startswith("handle_"):
-                parts = tag.split("_")
-                if len(parts) >= 3:
-                    # handle_{index}_{name}
-                    return int(parts[1]), parts[2]
+        # Find all items with "handle" tag and check if click is within their bounds
+        handle_items = self.view.canvas.find_withtag("handle")
+        h_size = 8  # Slightly larger detection area than the drawn handle (6)
+        
+        for item in handle_items:
+            # Get the bounding box of this handle
+            bbox = self.view.canvas.bbox(item)
+            if bbox:
+                x1, y1, x2, y2 = bbox
+                # Expand the detection area slightly for easier clicking
+                if (x1 - h_size <= x <= x2 + h_size) and (y1 - h_size <= y <= y2 + h_size):
+                    tags = self.view.canvas.gettags(item)
+                    for tag in tags:
+                        if tag.startswith("handle_"):
+                            parts = tag.split("_")
+                            if len(parts) >= 3:
+                                # handle_{index}_{name}
+                                return int(parts[1]), parts[2]
         return -1, -1
 
     def delete_selected_box(self):
@@ -1008,6 +1382,7 @@ class AnnotationController:
             self.model.boxes = [b for i, b in enumerate(self.model.boxes) if i not in self.model.selected_indices]
             self.model.selected_indices.clear()
             self.view.redraw_canvas()
+            self.view.update_box_list()
 
     def copy_boxes(self):
         if self._is_input_focused(): return
@@ -1025,6 +1400,7 @@ class AnnotationController:
         for box in self.model.clipboard:
             self.model.boxes.append(box.copy())
         self.view.redraw_canvas()
+        self.view.update_box_list()
 
     def save_preset(self, slot):
         if self._is_input_focused(): 
@@ -1068,6 +1444,7 @@ class AnnotationController:
             self.model.boxes.append(box.copy())
         
         self.view.redraw_canvas()
+        self.view.update_box_list()
         msg = f"Applied Preset {slot} ({len(preset_boxes)} boxes)"
         print(f"DEBUG: {msg}")
         self.view.update_status(msg)
@@ -1082,7 +1459,7 @@ class AnnotationController:
         lb_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
         theme_lb = tk.Listbox(lb_frame, bg=THEME['list_bg'], fg=THEME['fg_text'], 
-                               selectbackground=THEME['selection'], relief=tk.FLAT, bd=0)
+                               selectbackground=THEME['selection'], relief=tk.FLAT, bd=0, exportselection=False)
         theme_lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         for name in PREDEFINED_THEMES.keys():

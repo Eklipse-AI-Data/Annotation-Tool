@@ -35,3 +35,4 @@ epic_elimination_og
 impossible_shot_og
 first_strike_og
 pre_start_og
+elimination_description_og

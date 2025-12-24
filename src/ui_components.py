@@ -83,7 +83,7 @@ class TabbedFrame(tk.Frame):
         # Tab Button
         btn = tk.Button(self.header, text=name, bg=THEME['button_bg'], fg=THEME['button_fg'],
                         activebackground=THEME['button_highlight'], relief=tk.FLAT, bd=0, 
-                        padx=10, pady=5, font=('Segoe UI', 9, 'bold'), cursor='hand2',
+                        padx=10, pady=5, font=(THEME['font_family_sans'], THEME['font_size_main']-1, 'bold'), cursor='hand2',
                         command=lambda n=name: self.show_tab(n))
         btn.pack(side=tk.LEFT, fill=tk.X, expand=True)
         
@@ -123,7 +123,7 @@ class CollapsibleFrame(tk.Frame):
         # Toggle Button Header
         self.header = tk.Button(self, text=f"▼ {text}", bg=self.bg, fg=THEME['button_highlight'],
                                 activebackground=self.bg, activeforeground=THEME['fg_highlight'],
-                                relief=tk.FLAT, bd=0, anchor='w', font=('Segoe UI', 10, 'bold'),
+                                relief=tk.FLAT, bd=0, anchor='w', font=(THEME['font_family_serif'], THEME['font_size_header'], 'bold'),
                                 cursor='hand2', command=self.toggle)
         self.header.pack(fill=tk.X)
         self.text = text
@@ -158,14 +158,14 @@ class DarkLabel(tk.Label):
     def __init__(self, master, **kwargs):
         kwargs.setdefault('bg', THEME['bg_main'])
         kwargs.setdefault('fg', THEME['fg_text'])
-        kwargs.setdefault('font', ('Segoe UI', 10))
+        kwargs.setdefault('font', (THEME['font_family_sans'], THEME['font_size_main']))
         super().__init__(master, **kwargs)
 
 class SectionLabel(tk.Label):
     def __init__(self, master, **kwargs):
         kwargs.setdefault('bg', THEME['bg_sidebar'])
         kwargs.setdefault('fg', THEME['button_highlight'])  # Neon cyan for headers
-        kwargs.setdefault('font', ('Segoe UI', 11, 'bold'))
+        kwargs.setdefault('font', (THEME['font_family_serif'], THEME['font_size_header'], 'bold'))
         kwargs.setdefault('pady', 5)
         super().__init__(master, **kwargs)
 
@@ -179,7 +179,7 @@ class DarkButton(tk.Button):
         kwargs.setdefault('bd', 0)
         kwargs.setdefault('padx', 20)
         kwargs.setdefault('pady', 8)
-        kwargs.setdefault('font', ('Segoe UI', 10))
+        kwargs.setdefault('font', (THEME['font_family_sans'], THEME['font_size_main']))
         kwargs.setdefault('cursor', 'hand2')
         super().__init__(master, **kwargs)
         
@@ -202,7 +202,7 @@ class DarkEntry(tk.Entry):
         kwargs.setdefault('insertbackground', THEME['fg_text'])
         kwargs.setdefault('relief', tk.FLAT)
         kwargs.setdefault('bd', 0)
-        kwargs.setdefault('font', ('Segoe UI', 10))
+        kwargs.setdefault('font', (THEME['font_family_sans'], THEME['font_size_main']))
         super().__init__(master, **kwargs)
         
         # Add padding effect with a wrapper if needed
@@ -217,7 +217,7 @@ class DarkListbox(tk.Listbox):
         kwargs.setdefault('relief', tk.FLAT)
         kwargs.setdefault('bd', 0)
         kwargs.setdefault('highlightthickness', 0)
-        kwargs.setdefault('font', ('Segoe UI', 10))
+        kwargs.setdefault('font', (THEME['font_family_sans'], THEME['font_size_main']))
         kwargs.setdefault('activestyle', 'none')
         super().__init__(master, **kwargs)
 
@@ -275,7 +275,7 @@ class DarkProgressBar(tk.Canvas):
         # Draw text centered
         if self._text:
             self.create_text(width / 2, height / 2, text=self._text,
-                           fill=self.text_color, font=('Segoe UI', 9, 'bold'))
+                           fill=self.text_color, font=(THEME['font_family_sans'], THEME['font_size_main']-1, 'bold'))
     
     def _on_resize(self, event):
         """Handle resize events."""

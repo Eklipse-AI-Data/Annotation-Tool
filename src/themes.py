@@ -1,6 +1,26 @@
 # Predefined Color Palettes for the Annotation Tool
 
 PREDEFINED_THEMES = {
+    "Anthropic": {
+        'bg_main': '#e2e0d8',
+        'bg_sidebar': '#f0eee6',
+        'fg_text': '#141413',
+        'fg_highlight': '#000000',
+        'accent': '#141413',
+        'selection': '#d97757',
+        'border': '#d6d3d1',
+        'button_bg': '#141413',
+        'button_fg': '#faf9f5',
+        'button_hover': '#333332',
+        'entry_bg': '#f0eee6',
+        'entry_fg': '#141413',
+        'list_bg': '#f0eee6',
+        'button_highlight': '#d97757',
+        'font_family_sans': 'Segoe UI',
+        'font_family_serif': 'Georgia',
+        'font_size_main': 10,
+        'font_size_header': 12
+    },
     "Midnight Glass": {
         'bg_main': '#0f0c29',
         'bg_sidebar': '#1a1a2e',
@@ -15,7 +35,11 @@ PREDEFINED_THEMES = {
         'entry_bg': '#16213e',
         'entry_fg': '#ffffff',
         'list_bg': '#16213e',
-        'button_highlight': '#4cc9f0'
+        'button_highlight': '#4cc9f0',
+        'font_family_sans': 'Segoe UI',
+        'font_family_serif': 'Segoe UI',
+        'font_size_main': 10,
+        'font_size_header': 11
     },
     "Emerald": {
         'bg_main': '#061715',
@@ -31,7 +55,11 @@ PREDEFINED_THEMES = {
         'entry_bg': '#064e3b',
         'entry_fg': '#ffffff',
         'list_bg': '#064e3b',
-        'button_highlight': '#34d399'
+        'button_highlight': '#34d399',
+        'font_family_sans': 'Segoe UI',
+        'font_family_serif': 'Segoe UI',
+        'font_size_main': 10,
+        'font_size_header': 11
     },
     "Ruby": {
         'bg_main': '#1a0606',
@@ -47,7 +75,11 @@ PREDEFINED_THEMES = {
         'entry_bg': '#450a0a',
         'entry_fg': '#ffffff',
         'list_bg': '#450a0a',
-        'button_highlight': '#f87171'
+        'button_highlight': '#f87171',
+        'font_family_sans': 'Segoe UI',
+        'font_family_serif': 'Segoe UI',
+        'font_size_main': 10,
+        'font_size_header': 11
     },
     "Amber": {
         'bg_main': '#1a1206',
@@ -63,7 +95,11 @@ PREDEFINED_THEMES = {
         'entry_bg': '#451a03',
         'entry_fg': '#ffffff',
         'list_bg': '#451a03',
-        'button_highlight': '#fbbf24'
+        'button_highlight': '#fbbf24',
+        'font_family_sans': 'Segoe UI',
+        'font_family_serif': 'Segoe UI',
+        'font_size_main': 10,
+        'font_size_header': 11
     },
     "Frost": {
         'bg_main': '#f8fafc',
@@ -79,8 +115,12 @@ PREDEFINED_THEMES = {
         'entry_bg': '#ffffff',
         'entry_fg': '#1e293b',
         'list_bg': '#ffffff',
-        'button_highlight': '#2563eb'
+        'button_highlight': '#2563eb',
+        'font_family_sans': 'Segoe UI',
+        'font_family_serif': 'Segoe UI',
+        'font_size_main': 10,
+        'font_size_header': 11
     }
 }
 
-DEFAULT_THEME = PREDEFINED_THEMES["Midnight Glass"]
+DEFAULT_THEME = PREDEFINED_THEMES["Anthropic"]

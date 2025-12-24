@@ -2,7 +2,8 @@ import os
 import tkinter as tk
 from src.utils import (load_classes, load_config, save_config, 
                        load_session, save_session, get_annotated_images,
-                       parse_yolo, save_yolo)
+                       parse_yolo, save_yolo, ImagePreloader, validate_annotations,
+                       get_recent_projects, add_recent_project)
 
 SESSION_FILE = "session.json"
 CONFIG_FILE = "config.json"
@@ -64,6 +65,12 @@ class AnnotationModel:
         
         # Bounding Box Presets (Slots 1-9)
         self.presets = {}
+        
+        # Image Preloader for faster navigation
+        self.image_preloader = ImagePreloader(cache_size=7)
+        
+        # Recent Projects
+        self.recent_projects = get_recent_projects(SESSION_FILE)
 
     def save_state(self):
         """Saves current boxes to history stack."""
@@ -147,3 +154,19 @@ class AnnotationModel:
             return 0, 0
         annotated = get_annotated_images(self.image_dir, self.output_dir, self.full_image_list)
         return len(annotated), len(self.full_image_list)
+
+    def validate_current_annotations(self):
+        """Validate current image annotations and return warnings."""
+        return validate_annotations(self.boxes, self.classes)
+    
+    def add_to_recent_projects(self, name=None):
+        """Add current project to recent projects list."""
+        if not self.image_dir:
+            return
+        
+        # Use directory name as project name if not provided
+        if not name:
+            name = os.path.basename(self.image_dir.rstrip(os.sep))
+        
+        add_recent_project(name, self.image_dir, self.output_dir, SESSION_FILE)
+        self.recent_projects = get_recent_projects(SESSION_FILE)

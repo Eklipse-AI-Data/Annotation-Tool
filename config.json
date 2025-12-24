@@ -6,5 +6,12 @@
     "delete_box": "<q>",
     "copy": "<Control-c>",
     "paste": "<space>",
-    "edit_class": "<Control-e>"
+    "edit_class": "<Control-e>",
+    "undo": "<Control-z>",
+    "redo": "<Control-y>",
+    "crosshair_color": "#FFFFFF",
+    "crosshair_dash": [
+        1,
+        3
+    ]
 }

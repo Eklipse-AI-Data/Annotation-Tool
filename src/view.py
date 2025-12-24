@@ -11,7 +11,7 @@ class AnnotationView:
         self.root = root
         self.model = model
         
-        self.root.title("Annotation Tool - Midnight Glass")
+        self.root.title("Annotation Tool")
         self.root.geometry("1400x800")
         self.root.configure(bg=THEME['bg_main'])
         
@@ -23,6 +23,9 @@ class AnnotationView:
         self.cached_image_obj = None
         self.tk_image = None
         
+        # Shortcut overlay state
+        self.shortcut_overlay_visible = False
+        
         self.setup_ui()
 
     def setup_ui(self):
@@ -30,11 +33,28 @@ class AnnotationView:
         self.toolbar = DarkFrame(self.root, height=30)
         self.toolbar.pack(fill=tk.X, side=tk.TOP)
         
-        self.toggle_left_btn = DarkButton(self.toolbar, text="Toggle Project")
+        self.toggle_left_btn = DarkButton(self.toolbar, text="📂 Project")
         self.toggle_left_btn.pack(side=tk.LEFT, padx=5, pady=2)
         
-        self.toggle_sidebar_btn = DarkButton(self.toolbar, text="Toggle Box List")
+        self.undo_btn = DarkButton(self.toolbar, text="↶ Undo")
+        self.undo_btn.pack(side=tk.LEFT, padx=5, pady=2)
+        
+        self.redo_btn = DarkButton(self.toolbar, text="↷ Redo")
+        self.redo_btn.pack(side=tk.LEFT, padx=5, pady=2)
+        
+        # Validation button with warning indicator
+        self.validate_btn = DarkButton(self.toolbar, text="✓ Validate")
+        self.validate_btn.pack(side=tk.LEFT, padx=5, pady=2)
+        
+        self.warning_label = DarkLabel(self.toolbar, text="", fg="#FFD700", bg=THEME['bg_main'])
+        self.warning_label.pack(side=tk.LEFT, padx=5, pady=2)
+        
+        self.toggle_sidebar_btn = DarkButton(self.toolbar, text="📜 Box List")
         self.toggle_sidebar_btn.pack(side=tk.RIGHT, padx=5, pady=2)
+        
+        # Shortcut help button
+        self.shortcut_help_btn = DarkButton(self.toolbar, text="? Keys")
+        self.shortcut_help_btn.pack(side=tk.RIGHT, padx=5, pady=2)
         
         # Main Layout
         self.main_container = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, bg=THEME['bg_main'], sashwidth=4, sashrelief=tk.FLAT)
@@ -61,10 +81,10 @@ class AnnotationView:
         self.status_bar = DarkFrame(self.root, height=25)
         self.status_bar.pack(fill=tk.X, side=tk.BOTTOM)
         
-        self.status_label = DarkLabel(self.status_bar, text="Ready", font=("Segoe UI", 9))
+        self.status_label = DarkLabel(self.status_bar, text="Ready", font=(THEME['font_family_sans'], THEME['font_size_main']-1))
         self.status_label.pack(side=tk.LEFT, padx=10)
         
-        self.coords_label = DarkLabel(self.status_bar, text="", font=("Segoe UI", 9))
+        self.coords_label = DarkLabel(self.status_bar, text="", font=(THEME['font_family_sans'], THEME['font_size_main']-1))
         self.coords_label.pack(side=tk.RIGHT, padx=10)
 
     def setup_left_sidebar(self):
@@ -89,6 +109,16 @@ class AnnotationView:
         
         self.dir_label = DarkLabel(proj_section.content, text="No directory selected", bg=THEME['bg_sidebar'], fg=THEME['fg_text'], wraplength=230)
         self.dir_label.pack(fill=tk.X, padx=10, pady=5)
+        
+        # Recent Projects Section
+        recent_label = DarkLabel(proj_section.content, text="Recent Projects:", bg=THEME['bg_sidebar'], fg=THEME['fg_text'])
+        recent_label.pack(fill=tk.X, padx=10, pady=(10, 2))
+        
+        self.recent_projects_combo = ttk.Combobox(proj_section.content, state="readonly", width=30)
+        self.recent_projects_combo.pack(fill=tk.X, padx=10, pady=2)
+        
+        self.load_recent_btn = DarkButton(proj_section.content, text="Load Selected Project")
+        self.load_recent_btn.pack(fill=tk.X, padx=10, pady=2)
 
         # File List (Collapsible)
         file_section = CollapsibleFrame(project_tab, "FILES")
@@ -180,14 +210,21 @@ class AnnotationView:
         self.canvas.configure(yscrollcommand=self.v_scroll.set, xscrollcommand=self.h_scroll.set)
 
     def setup_right_sidebar(self):
-        # Create scrollable container for right sidebar
-        self.right_scroll = ScrollableFrame(self.right_sidebar, bg=THEME['bg_sidebar'])
-        self.right_scroll.pack(fill=tk.BOTH, expand=True)
-        self.right_content = self.right_scroll.scrollable_content
+        # Create a simple frame instead of a scrollable one to avoid double-scrolling
+        self.right_container = DarkFrame(self.right_sidebar, bg=THEME['bg_sidebar'])
+        self.right_container.pack(fill=tk.BOTH, expand=True)
         
-        SectionLabel(self.right_content, text="Box Labels").pack(fill=tk.X, padx=10, pady=(10, 0))
-        self.box_listbox = DarkListbox(self.right_content, selectmode=tk.EXTENDED)
-        self.box_listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        SectionLabel(self.right_container, text="Box Labels").pack(fill=tk.X, padx=10, pady=(10, 0))
+        
+        list_container = DarkFrame(self.right_container, bg=THEME['bg_sidebar'])
+        list_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        self.box_listbox = DarkListbox(list_container, selectmode=tk.EXTENDED)
+        self.box_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        box_scrollbar = tk.Scrollbar(list_container, orient=tk.VERTICAL, command=self.box_listbox.yview)
+        box_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.box_listbox.configure(yscrollcommand=box_scrollbar.set)
 
     def update_dir_label(self, path):
         self.dir_label.config(text=path if path else "No directory selected")
@@ -212,8 +249,137 @@ class AnnotationView:
         cw = self.canvas.winfo_width()
         ch = self.canvas.winfo_height()
         
-        self.canvas.create_line(0, y, cw, y, fill="#FFFFFF", dash=(2, 2), tags="crosshair")
-        self.canvas.create_line(x, 0, x, ch, fill="#FFFFFF", dash=(2, 2), tags="crosshair")
+        self.canvas.create_line(0, y, cw, y, fill='#FFFFFF', dash=(2, 2), tags="crosshair")
+        self.canvas.create_line(x, 0, x, ch, fill='#FFFFFF', dash=(2, 2), tags="crosshair")
+
+    def toggle_shortcut_overlay(self):
+        """Toggle the keyboard shortcut overlay on the canvas."""
+        self.shortcut_overlay_visible = not self.shortcut_overlay_visible
+        if self.shortcut_overlay_visible:
+            self.draw_shortcut_overlay()
+        else:
+            self.canvas.delete("shortcut_overlay")
+
+    def draw_shortcut_overlay(self):
+        """Draw keyboard shortcuts overlay on the canvas."""
+        self.canvas.delete("shortcut_overlay")
+        
+        cw = self.canvas.winfo_width()
+        ch = self.canvas.winfo_height()
+        
+        if cw <= 1 or ch <= 1:
+            return
+        
+        # Semi-transparent background
+        self.canvas.create_rectangle(
+            cw * 0.15, ch * 0.1, cw * 0.85, ch * 0.9,
+            fill='#000000', stipple='gray50', outline=THEME['accent'], width=2,
+            tags="shortcut_overlay"
+        )
+        
+        # Title
+        self.canvas.create_text(
+            cw / 2, ch * 0.15,
+            text="⌨ KEYBOARD SHORTCUTS",
+            fill=THEME['button_highlight'], font=(THEME['font_family_sans'], 16, 'bold'),
+            tags="shortcut_overlay"
+        )
+        
+        # Shortcuts list
+        shortcuts = [
+            ("Navigation", [
+                ("A / ←", "Previous Image"),
+                ("D / →", "Next Image"),
+                ("↓", "Cycle Class"),
+                ("Escape", "Deselect Class"),
+            ]),
+            ("Editing", [
+                ("Click + Drag", "Draw Box"),
+                ("Click", "Stamp Template Box"),
+                ("Q / Delete", "Delete Selected"),
+                ("Ctrl+C", "Copy Boxes"),
+                ("Space / Ctrl+V", "Paste Boxes"),
+                ("Ctrl+E", "Edit Box Class"),
+            ]),
+            ("History", [
+                ("Ctrl+Z", "Undo"),
+                ("Ctrl+Y", "Redo"),
+            ]),
+            ("View", [
+                ("Mouse Wheel", "Zoom In/Out"),
+                ("Right Click + Drag", "Pan"),
+                ("U", "Toggle Unannotated Filter"),
+                ("?", "Toggle This Overlay"),
+            ]),
+            ("Presets", [
+                ("Ctrl+1-9", "Apply Box Preset"),
+                ("Ctrl+Shift+1-9", "Save Box Preset"),
+            ]),
+        ]
+        
+        y_offset = ch * 0.22
+        col_width = cw * 0.35
+        
+        for col, start_idx in [(0, 0), (1, 3)]:
+            x_base = cw * 0.25 + col * col_width
+            y = y_offset
+            
+            for section_idx in range(start_idx, min(start_idx + 3, len(shortcuts))):
+                if section_idx >= len(shortcuts):
+                    break
+                    
+                section_name, items = shortcuts[section_idx]
+                
+                # Section header
+                self.canvas.create_text(
+                    x_base, y,
+                    text=section_name.upper(),
+                    fill=THEME['button_highlight'], font=(THEME['font_family_sans'], 11, 'bold'),
+                    anchor='w', tags="shortcut_overlay"
+                )
+                y += 25
+                
+                for key, description in items:
+                    # Key
+                    self.canvas.create_text(
+                        x_base, y,
+                        text=key,
+                        fill='#FFFFFF', font=(THEME['font_family_sans'], 10, 'bold'),
+                        anchor='w', tags="shortcut_overlay"
+                    )
+                    # Description
+                    self.canvas.create_text(
+                        x_base + 130, y,
+                        text=description,
+                        fill='#CCCCCC', font=(THEME['font_family_sans'], 10),
+                        anchor='w', tags="shortcut_overlay"
+                    )
+                    y += 22
+                
+                y += 15  # Gap between sections
+        
+        # Footer
+        self.canvas.create_text(
+            cw / 2, ch * 0.87,
+            text="Press ? or click 'Keys' button to close",
+            fill='#888888', font=(THEME['font_family_sans'], 10, 'italic'),
+            tags="shortcut_overlay"
+        )
+
+    def update_warning_indicator(self, warnings):
+        """Update the warning indicator in the toolbar."""
+        if not warnings:
+            self.warning_label.config(text="✓", fg="#00FF00")
+        else:
+            error_count = sum(1 for w in warnings if w['severity'] == 'error')
+            warn_count = sum(1 for w in warnings if w['severity'] == 'warning')
+            
+            if error_count > 0:
+                self.warning_label.config(text=f"⚠ {error_count} errors", fg="#FF4444")
+            elif warn_count > 0:
+                self.warning_label.config(text=f"⚠ {warn_count} warnings", fg="#FFD700")
+            else:
+                self.warning_label.config(text=f"ℹ {len(warnings)} info", fg="#4CC9F0")
 
     def update_status(self, text):
         self.status_label.config(text=text)
@@ -284,9 +450,6 @@ class AnnotationView:
         for i, box in enumerate(self.model.boxes):
             is_selected = i in self.model.selected_indices
             self.draw_box_on_canvas(box, is_selected, i)
-            
-        # Update box list (sidebar)
-        self.update_box_list()
 
     def draw_box_on_canvas(self, box, is_selected, index):
         if not self.model.current_image_pil: return
@@ -320,7 +483,7 @@ class AnnotationView:
             text_x = cx1
             text_y = cy1 - 15
             if text_y < 0: text_y = cy1 + 5
-            self.canvas.create_text(text_x, text_y, text=label_text, fill=color, anchor=tk.SW, font=("Segoe UI", 9, "bold"), tags="label")
+            self.canvas.create_text(text_x, text_y, text=label_text, fill=color, anchor=tk.SW, font=(THEME['font_family_sans'], THEME['font_size_main']-1, "bold"), tags="label")
 
         # Draw handles if selected
         if is_selected:
@@ -362,7 +525,16 @@ class AnnotationView:
         
         try:
             if isinstance(widget, DarkFrame):
-                widget.configure(bg=THEME['bg_main'])
+                # Inherit background from master if it's a sidebar color, else use main
+                bg = widget.master.cget('bg') if hasattr(widget.master, 'cget') else THEME['bg_main']
+                if bg == THEME['bg_sidebar']:
+                    widget.configure(bg=THEME['bg_sidebar'])
+                else:
+                    widget.configure(bg=THEME['bg_main'])
+                
+                # Special cases for inner frames of complex components
+                if 'TabbedFrame' in str(type(widget.master)) or 'CollapsibleFrame' in str(type(widget.master)):
+                     widget.configure(bg=THEME['bg_sidebar'])
             elif isinstance(widget, SidebarFrame):
                 widget.configure(bg=THEME['bg_sidebar'])
             elif isinstance(widget, ScrollableFrame):
@@ -381,19 +553,19 @@ class AnnotationView:
                 widget.header.configure(bg=THEME['bg_sidebar'], fg=THEME['button_highlight'], activebackground=THEME['bg_sidebar'])
                 widget.content.configure(bg=THEME['bg_sidebar'])
             elif isinstance(widget, SectionLabel):
-                widget.configure(bg=THEME['bg_sidebar'], fg=THEME['button_highlight'])
+                widget.configure(bg=THEME['bg_sidebar'], fg=THEME['button_highlight'], font=(THEME['font_family_serif'], THEME['font_size_header'], 'bold'))
             elif isinstance(widget, DarkLabel):
                 # Labels might be on sidebar or main
                 bg = widget.master.cget('bg') if hasattr(widget.master, 'cget') else THEME['bg_main']
-                widget.configure(bg=bg, fg=THEME['fg_text'])
+                widget.configure(bg=bg, fg=THEME['fg_text'], font=(THEME['font_family_sans'], THEME['font_size_main']))
             elif isinstance(widget, DarkButton):
-                widget.configure(bg=THEME['button_bg'], fg=THEME['button_fg'], activebackground=THEME['button_highlight'])
+                widget.configure(bg=THEME['button_bg'], fg=THEME['button_fg'], activebackground=THEME['button_highlight'], font=(THEME['font_family_sans'], THEME['font_size_main']))
             elif isinstance(widget, DarkEntry):
                 widget.configure(bg=THEME['entry_bg'], fg=THEME['entry_fg'], insertbackground=THEME['fg_text'],
-                                 highlightbackground=THEME['border'], highlightcolor=THEME['accent'])
+                                 highlightbackground=THEME['border'], highlightcolor=THEME['accent'], font=(THEME['font_family_sans'], THEME['font_size_main']))
             elif isinstance(widget, DarkListbox):
                 widget.configure(bg=THEME['list_bg'], fg=THEME['entry_fg'], 
-                                 selectbackground=THEME['selection'], selectforeground=THEME['fg_highlight'])
+                                 selectbackground=THEME['selection'], selectforeground=THEME['fg_highlight'], font=(THEME['font_family_sans'], THEME['font_size_main']))
             elif isinstance(widget, DarkProgressBar):
                 widget.bg_color = THEME['entry_bg']
                 widget.fg_color = THEME['button_highlight']

@@ -3,6 +3,8 @@ import os
 import json
 import random
 import colorsys
+import threading
+from collections import OrderedDict
 from PIL import Image
 
 def load_classes(file_path):
@@ -171,13 +173,15 @@ def create_class_mapping(old_classes, new_classes):
             mapping[old_id] = None  # Class was removed
     return mapping
 
-def update_annotation_file(file_path, class_mapping):
+def update_annotation_file(file_path, class_mapping, remove_unmapped=False):
     """
     Updates a single annotation file with new class IDs based on the mapping.
     
     Args:
         file_path (str): Path to the annotation .txt file.
         class_mapping (dict): Mapping of old class ID to new class ID.
+        remove_unmapped (bool): If True, remove lines with class IDs not in mapping.
+                               If False, keep them unchanged (default for batch replace).
     
     Returns:
         bool: True if successful, False otherwise.
@@ -192,13 +196,18 @@ def update_annotation_file(file_path, class_mapping):
                 parts = line.strip().split()
                 if len(parts) >= 5:
                     old_class_id = int(parts[0])
-                    new_class_id = class_mapping.get(old_class_id)
                     
-                    if new_class_id is not None:
-                        # Update the class ID
-                        parts[0] = str(new_class_id)
+                    if old_class_id in class_mapping:
+                        new_class_id = class_mapping[old_class_id]
+                        if new_class_id is not None:
+                            # Update the class ID
+                            parts[0] = str(new_class_id)
+                            updated_lines.append(' '.join(parts) + '\n')
+                        # If new_class_id is None, skip this line (class was removed)
+                    elif not remove_unmapped:
+                        # Keep the line unchanged if not in mapping and remove_unmapped is False
                         updated_lines.append(' '.join(parts) + '\n')
-                    # If new_class_id is None, skip this line (class was removed)
+                    # If remove_unmapped is True and not in mapping, skip this line
         
         # Write updated content back to file
         with open(file_path, 'w') as f:
@@ -420,3 +429,223 @@ def resize_images_to_lowres(input_folder, target_width=720):
     except Exception as e:
         print(f"Error accessing folder: {e}")
         return None
+
+
+# ==================== IMAGE PRELOADER ====================
+
+class ImagePreloader:
+    """
+    Background image preloader for smoother navigation.
+    Caches adjacent images to reduce load times when navigating.
+    """
+    def __init__(self, cache_size=7):
+        self.cache = OrderedDict()
+        self.cache_size = cache_size
+        self.lock = threading.Lock()
+        self._loading = set()  # Track images currently being loaded
+    
+    def get(self, image_path):
+        """Get an image from cache, or None if not cached."""
+        with self.lock:
+            if image_path in self.cache:
+                # Move to end (most recently used)
+                self.cache.move_to_end(image_path)
+                return self.cache[image_path]
+        return None
+    
+    def put(self, image_path, image):
+        """Add an image to the cache."""
+        with self.lock:
+            if image_path in self.cache:
+                self.cache.move_to_end(image_path)
+            else:
+                self.cache[image_path] = image
+                # Evict oldest if over capacity
+                while len(self.cache) > self.cache_size:
+                    self.cache.popitem(last=False)
+    
+    def preload(self, image_paths):
+        """Preload multiple images in background threads."""
+        for path in image_paths:
+            if path not in self.cache and path not in self._loading:
+                self._loading.add(path)
+                thread = threading.Thread(target=self._load_image, args=(path,), daemon=True)
+                thread.start()
+    
+    def _load_image(self, image_path):
+        """Load a single image (runs in background thread)."""
+        try:
+            if os.path.exists(image_path):
+                img = Image.open(image_path)
+                img.load()  # Force load into memory
+                self.put(image_path, img)
+        except Exception as e:
+            print(f"Preload error for {image_path}: {e}")
+        finally:
+            with self.lock:
+                self._loading.discard(image_path)
+    
+    def clear(self):
+        """Clear the cache."""
+        with self.lock:
+            self.cache.clear()
+
+
+# ==================== ANNOTATION VALIDATION ====================
+
+def validate_annotations(boxes, classes, image_width=None, image_height=None):
+    """
+    Validate annotation boxes for common issues.
+    
+    Args:
+        boxes: List of box dicts with x_center, y_center, w, h, class_id
+        classes: List of class dicts with id and name
+        image_width: Optional image width for additional checks
+        image_height: Optional image height for additional checks
+    
+    Returns:
+        List of warning dicts: {'type': str, 'message': str, 'box_index': int, 'severity': str}
+    """
+    warnings = []
+    class_ids = {c['id'] for c in classes}
+    
+    for i, box in enumerate(boxes):
+        # Check for invalid class ID
+        if box['class_id'] not in class_ids and box['class_id'] != -1:
+            warnings.append({
+                'type': 'invalid_class',
+                'message': f"Box {i}: Unknown class ID {box['class_id']}",
+                'box_index': i,
+                'severity': 'error'
+            })
+        
+        # Check for out of bounds (normalized should be 0-1)
+        if not (0 <= box['x_center'] <= 1) or not (0 <= box['y_center'] <= 1):
+            warnings.append({
+                'type': 'out_of_bounds',
+                'message': f"Box {i}: Center position out of bounds",
+                'box_index': i,
+                'severity': 'error'
+            })
+        
+        # Check if box extends outside image
+        x1 = box['x_center'] - box['w'] / 2
+        y1 = box['y_center'] - box['h'] / 2
+        x2 = box['x_center'] + box['w'] / 2
+        y2 = box['y_center'] + box['h'] / 2
+        
+        if x1 < -0.01 or y1 < -0.01 or x2 > 1.01 or y2 > 1.01:
+            warnings.append({
+                'type': 'extends_outside',
+                'message': f"Box {i}: Extends outside image boundaries",
+                'box_index': i,
+                'severity': 'warning'
+            })
+        
+        # Check for tiny boxes (likely accidental clicks)
+        area = box['w'] * box['h']
+        if area < 0.0001:  # Less than 0.01% of image
+            warnings.append({
+                'type': 'tiny_box',
+                'message': f"Box {i}: Extremely small ({area*100:.4f}% of image)",
+                'box_index': i,
+                'severity': 'warning'
+            })
+        
+        # Check for very large boxes (might be errors)
+        if area > 0.9:  # More than 90% of image
+            warnings.append({
+                'type': 'huge_box',
+                'message': f"Box {i}: Covers {area*100:.1f}% of image",
+                'box_index': i,
+                'severity': 'info'
+            })
+        
+        # Check for boxes with zero dimension
+        if box['w'] <= 0 or box['h'] <= 0:
+            warnings.append({
+                'type': 'zero_dimension',
+                'message': f"Box {i}: Has zero or negative dimension",
+                'box_index': i,
+                'severity': 'error'
+            })
+    
+    # Check for overlapping boxes (same class, high IoU)
+    for i in range(len(boxes)):
+        for j in range(i + 1, len(boxes)):
+            if boxes[i]['class_id'] == boxes[j]['class_id']:
+                iou = calculate_iou(boxes[i], boxes[j])
+                if iou > 0.9:
+                    warnings.append({
+                        'type': 'duplicate',
+                        'message': f"Boxes {i} and {j}: Possible duplicates (IoU={iou:.2f})",
+                        'box_index': i,
+                        'severity': 'warning'
+                    })
+    
+    return warnings
+
+
+def calculate_iou(box1, box2):
+    """Calculate Intersection over Union between two normalized boxes."""
+    # Convert to corner format
+    x1_1 = box1['x_center'] - box1['w'] / 2
+    y1_1 = box1['y_center'] - box1['h'] / 2
+    x2_1 = box1['x_center'] + box1['w'] / 2
+    y2_1 = box1['y_center'] + box1['h'] / 2
+    
+    x1_2 = box2['x_center'] - box2['w'] / 2
+    y1_2 = box2['y_center'] - box2['h'] / 2
+    x2_2 = box2['x_center'] + box2['w'] / 2
+    y2_2 = box2['y_center'] + box2['h'] / 2
+    
+    # Calculate intersection
+    xi1 = max(x1_1, x1_2)
+    yi1 = max(y1_1, y1_2)
+    xi2 = min(x2_1, x2_2)
+    yi2 = min(y2_1, y2_2)
+    
+    if xi2 <= xi1 or yi2 <= yi1:
+        return 0.0
+    
+    inter_area = (xi2 - xi1) * (yi2 - yi1)
+    
+    # Calculate union
+    area1 = box1['w'] * box1['h']
+    area2 = box2['w'] * box2['h']
+    union_area = area1 + area2 - inter_area
+    
+    if union_area <= 0:
+        return 0.0
+    
+    return inter_area / union_area
+
+
+# ==================== RECENT PROJECTS ====================
+
+def get_recent_projects(session_path="session.json", max_projects=10):
+    """Get list of recent projects from session file."""
+    session = load_session(session_path)
+    return session.get('recent_projects', [])
+
+
+def add_recent_project(name, image_dir, output_dir, session_path="session.json", max_projects=10):
+    """Add or update a project in the recent projects list."""
+    session = load_session(session_path)
+    recent = session.get('recent_projects', [])
+    
+    # Remove existing entry with same directories
+    recent = [p for p in recent if p.get('image_dir') != image_dir]
+    
+    # Add new entry at the beginning
+    recent.insert(0, {
+        'name': name,
+        'image_dir': image_dir,
+        'output_dir': output_dir
+    })
+    
+    # Trim to max size
+    recent = recent[:max_projects]
+    
+    session['recent_projects'] = recent
+    save_session(session_path, session)
