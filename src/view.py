@@ -549,11 +549,18 @@ class AnnotationView:
                 widget.header.configure(bg=THEME['bg_sidebar'])
                 widget.content.configure(bg=THEME['bg_sidebar'])
                 for btn, frame in widget.tabs.values():
-                    btn.configure(bg=THEME['button_bg'], fg=THEME['button_fg'], activebackground=THEME['button_highlight'])
+                    # TabButton now handles its own theming
+                    btn.bg_color = THEME['button_bg']
+                    btn.fg_color = THEME['button_fg']
+                    btn.active_bg = THEME['button_highlight']
+                    btn.hover_color = THEME['button_hover']
+                    btn._draw()
                     frame.configure(bg=THEME['bg_sidebar'])
             elif isinstance(widget, CollapsibleFrame):
                 widget.configure(bg=THEME['bg_sidebar'])
-                widget.header.configure(bg=THEME['bg_sidebar'], fg=THEME['button_highlight'], activebackground=THEME['bg_sidebar'])
+                widget.header.bg_color = THEME['bg_sidebar']
+                widget.header.fg_color = THEME['button_highlight']
+                widget.header._draw()
                 widget.content.configure(bg=THEME['bg_sidebar'])
             elif isinstance(widget, SectionLabel):
                 widget.configure(bg=THEME['bg_sidebar'], fg=THEME['button_highlight'], font=(THEME['font_family_serif'], THEME['font_size_header'], 'bold'))
@@ -562,10 +569,16 @@ class AnnotationView:
                 bg = widget.master.cget('bg') if hasattr(widget.master, 'cget') else THEME['bg_main']
                 widget.configure(bg=bg, fg=THEME['fg_text'], font=(THEME['font_family_sans'], THEME['font_size_main']))
             elif isinstance(widget, DarkButton):
-                widget.configure(bg=THEME['button_bg'], fg=THEME['button_fg'], activebackground=THEME['button_highlight'], font=(THEME['font_family_sans'], THEME['font_size_main']))
+                widget.bg_color = THEME['button_bg']
+                widget.fg_color = THEME['button_fg']
+                widget.hover_color = THEME['button_hover']
+                widget.active_color = THEME['button_highlight']
+                widget.font = (THEME['font_family_sans'], THEME['font_size_main'])
+                widget._current_bg = widget.bg_color
+                widget._draw()
             elif isinstance(widget, DarkEntry):
-                widget.configure(bg=THEME['entry_bg'], fg=THEME['entry_fg'], insertbackground=THEME['fg_text'],
-                                 highlightbackground=THEME['border'], highlightcolor=THEME['accent'], font=(THEME['font_family_sans'], THEME['font_size_main']))
+                widget.configure(bg=THEME['entry_bg'], fg=THEME['entry_fg'], font=(THEME['font_family_sans'], THEME['font_size_main']),
+                                 highlightbackground=THEME['border'], highlightcolor=THEME['accent'])
             elif isinstance(widget, DarkListbox):
                 widget.configure(bg=THEME['list_bg'], fg=THEME['entry_fg'], 
                                  selectbackground=THEME['selection'], selectforeground=THEME['fg_highlight'], font=(THEME['font_family_sans'], THEME['font_size_main']))
@@ -573,7 +586,6 @@ class AnnotationView:
                 widget.bg_color = THEME['entry_bg']
                 widget.fg_color = THEME['button_highlight']
                 widget.text_color = THEME['fg_text']
-                widget.configure(bg=THEME['entry_bg'], highlightbackground=THEME['border'])
                 widget._draw()
             elif isinstance(widget, tk.Checkbutton):
                 bg = widget.master.cget('bg') if hasattr(widget.master, 'cget') else THEME['bg_sidebar']
