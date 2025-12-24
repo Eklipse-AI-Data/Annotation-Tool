@@ -183,6 +183,8 @@ class AnnotationView:
         self.copy_btn.pack(fill=tk.X, padx=10, pady=2)
         self.paste_btn = DarkButton(tools_section.content, text="Paste Boxes (Ctrl+V)")
         self.paste_btn.pack(fill=tk.X, padx=10, pady=2)
+        self.duplicate_btn = DarkButton(tools_section.content, text="Duplicate Boxes (Ctrl+D)")
+        self.duplicate_btn.pack(fill=tk.X, padx=10, pady=2)
         
         self.auto_save_check = tk.Checkbutton(tools_section.content, text="Auto Save", variable=self.model.auto_save, 
                                              bg=THEME['bg_sidebar'], fg=THEME['fg_text'], selectcolor=THEME['bg_sidebar'], 
@@ -299,6 +301,7 @@ class AnnotationView:
                 ("Q / Delete", "Delete Selected"),
                 ("Ctrl+C", "Copy Boxes"),
                 ("Space / Ctrl+V", "Paste Boxes"),
+                ("Ctrl+D", "Duplicate Boxes"),
                 ("Ctrl+E", "Edit Box Class"),
             ]),
             ("History", [

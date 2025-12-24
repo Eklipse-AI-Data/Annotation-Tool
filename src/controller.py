@@ -102,6 +102,7 @@ class AnnotationController:
         self.view.clear_filter_btn.configure(command=self.clear_image_filter)
         self.view.copy_btn.configure(command=self.copy_boxes)
         self.view.paste_btn.configure(command=self.paste_boxes)
+        self.view.duplicate_btn.configure(command=self.duplicate_boxes)
         self.view.validate_btn.configure(command=self.show_validation_dialog)
         self.view.shortcut_help_btn.configure(command=self.toggle_shortcut_overlay)
         self.view.load_recent_btn.configure(command=self.load_recent_project)
@@ -140,6 +141,7 @@ class AnnotationController:
         root.bind(cfg['delete_box'], shortcut(self.delete_selected_box))
         root.bind(cfg['copy'], shortcut(self.copy_boxes))
         root.bind(cfg['paste'], shortcut(self.paste_boxes))
+        root.bind(cfg['duplicate'], shortcut(self.duplicate_boxes))
         root.bind(cfg['cycle_class'], shortcut(self.cycle_class))
         root.bind(cfg['edit_class'], shortcut(self.edit_selected_box_class))
         root.bind(cfg['deselect'], lambda e: self.deselect_class())  # Escape always works (to leave entry)
@@ -660,7 +662,7 @@ class AnnotationController:
         
         # Only show keybinding config items (exclude crosshair settings)
         keybinding_keys = ['deselect', 'next_image', 'prev_image', 'cycle_class', 'delete_box', 
-                          'copy', 'paste', 'edit_class', 'undo', 'redo']
+                          'copy', 'paste', 'duplicate', 'edit_class', 'undo', 'redo']
         
         for action, key in self.model.config.items():
             # Skip non-keybinding items
@@ -1038,7 +1040,10 @@ class AnnotationController:
                 else:
                     self.model.selected_indices.add(clicked_box_idx)
             else:
-                self.model.selected_indices = {clicked_box_idx}
+                # If clicking on an already-selected box, keep the multi-selection
+                # Only replace selection if clicking on an unselected box
+                if clicked_box_idx not in self.model.selected_indices:
+                    self.model.selected_indices = {clicked_box_idx}
             
             self.model.save_state()
             self.model.move_mode = True
@@ -1401,6 +1406,40 @@ class AnnotationController:
             self.model.boxes.append(box.copy())
         self.view.redraw_canvas()
         self.view.update_box_list()
+
+    def duplicate_boxes(self):
+        """Duplicate selected boxes (or all if none selected) with a small offset."""
+        if self._is_input_focused(): return
+        
+        # Determine which boxes to duplicate
+        if self.model.selected_indices:
+            boxes_to_dup = [self.model.boxes[i].copy() for i in self.model.selected_indices]
+        else:
+            boxes_to_dup = [b.copy() for b in self.model.boxes]
+        
+        if not boxes_to_dup:
+            return
+        
+        self.model.save_state()
+        
+        # Offset for duplicated boxes (small shift so they're visible)
+        offset = 0.02  # 2% of image dimension
+        
+        new_indices = []
+        for box in boxes_to_dup:
+            new_box = box.copy()
+            # Shift the duplicate slightly down and right (YOLO format uses x_center, y_center)
+            new_box['x_center'] = min(1.0 - new_box['w'] / 2, new_box['x_center'] + offset)
+            new_box['y_center'] = min(1.0 - new_box['h'] / 2, new_box['y_center'] + offset)
+            self.model.boxes.append(new_box)
+            new_indices.append(len(self.model.boxes) - 1)
+        
+        # Select the newly duplicated boxes
+        self.model.selected_indices = set(new_indices)
+        
+        self.view.redraw_canvas()
+        self.view.update_box_list()
+        self.view.update_status(f"Duplicated {len(boxes_to_dup)} box(es)")
 
     def save_preset(self, slot):
         if self._is_input_focused(): 
