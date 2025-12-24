@@ -40,7 +40,9 @@ def load_config(path):
         "delete_box": "<Delete>",
         "copy": "<Control-c>",
         "paste": "<Control-v>",
-        "edit_class": "<Control-e>"
+        "edit_class": "<Control-e>",
+        "undo": "<Control-z>",
+        "redo": "<Control-y>"
     }
     if not os.path.exists(path):
         return default_config
@@ -62,6 +64,77 @@ def save_config(path, config):
             json.dump(config, f, indent=4)
     except Exception as e:
         print(f"Error saving config: {e}")
+
+# ==================== SESSION MANAGEMENT ====================
+
+def get_default_session():
+    """Returns default session state."""
+    return {
+        "last_image_dir": "",
+        "last_output_dir": "",
+        "last_image_index": 0,
+        "zoom_factor": 1.0,
+        "show_labels": True,
+        "auto_save": True,
+        "show_right_sidebar": True
+    }
+
+def load_session(path):
+    """
+    Load last session state from JSON file.
+    Returns default session if file doesn't exist or is corrupted.
+    """
+    default = get_default_session()
+    if not os.path.exists(path):
+        return default
+    
+    try:
+        with open(path, 'r') as f:
+            session = json.load(f)
+            # Merge with defaults to ensure all keys exist
+            merged = default.copy()
+            merged.update(session)
+            return merged
+    except Exception as e:
+        print(f"Error loading session: {e}")
+        return default
+
+def save_session(path, session_state):
+    """Save session state to JSON file."""
+    try:
+        with open(path, 'w') as f:
+            json.dump(session_state, f, indent=4)
+    except Exception as e:
+        print(f"Error saving session: {e}")
+
+def get_annotated_images(image_dir, output_dir, image_list):
+    """
+    Returns a set of image filenames that have corresponding annotation files.
+    
+    Args:
+        image_dir: Directory containing images
+        output_dir: Directory containing annotation .txt files
+        image_list: List of image filenames to check
+    
+    Returns:
+        set: Set of image filenames that have annotations
+    """
+    annotated = set()
+    if not output_dir or not os.path.exists(output_dir):
+        return annotated
+    
+    for img_file in image_list:
+        name, _ = os.path.splitext(img_file)
+        txt_path = os.path.join(output_dir, name + ".txt")
+        if os.path.exists(txt_path):
+            # Check if file is not empty
+            try:
+                if os.path.getsize(txt_path) > 0:
+                    annotated.add(img_file)
+            except:
+                pass
+    
+    return annotated
 
 def save_classes(file_path, classes):
     """

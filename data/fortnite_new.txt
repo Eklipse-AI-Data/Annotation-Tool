@@ -27,3 +27,11 @@ pre_start
 pre_start_rank
 bus
 game_mode
+team_wiped
+double_elimination_og
+triple_elimination_og
+mega_elimination_og
+epic_elimination_og
+impossible_shot_og
+first_strike_og
+pre_start_og

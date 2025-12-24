@@ -4,13 +4,17 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from PIL import Image, ImageTk
 from src.utils import (load_classes, natural_sort_key, parse_yolo, save_yolo, denormalize_box, 
                        normalize_box, load_config, save_config, resize_images_to_lowres,
-                       save_classes, create_class_mapping, update_annotation_file, backup_annotations)
-from src.ui_components import DarkButton, DarkLabel, DarkListbox, DarkFrame, SectionLabel, SidebarFrame, THEME, DarkEntry
-import tkinter.simpledialog as simpledialog
+                       save_classes, create_class_mapping, update_annotation_file, backup_annotations,
+                       load_session, save_session, get_annotated_images)
+from src.ui_components import (DarkButton, DarkLabel, DarkListbox, DarkFrame, SectionLabel, 
+                               SidebarFrame, THEME, DarkEntry, DarkProgressBar)
 import tkinter.simpledialog as simpledialog
 import shutil
 import threading
 import concurrent.futures
+
+# Session file path
+SESSION_FILE = "session.json"
 
 
 class AnnotationApp:
@@ -19,6 +23,9 @@ class AnnotationApp:
         self.root.title("Annotation Tool - Midnight Glass")
         self.root.geometry("1400x800")
         self.root.configure(bg=THEME['bg_main'])
+        
+        # Load session
+        self.session = load_session(SESSION_FILE)
         
         # State
         self.image_dir = ""
@@ -31,7 +38,7 @@ class AnnotationApp:
         self.scale = 1.0
         self.offset_x = 0
         self.offset_y = 0
-        self.zoom_factor = 1.0
+        self.zoom_factor = self.session.get('zoom_factor', 1.0)
 
         self.config = load_config("config.json")
         self.classes = load_classes("data/predefined_classes.txt") # List of dicts
@@ -59,9 +66,12 @@ class AnnotationApp:
         self.move_mode = False
         self.move_box_index = -1
         
-        self.auto_save = tk.BooleanVar(value=True)
-        self.show_labels = tk.BooleanVar(value=True)
-        self.show_right_sidebar = tk.BooleanVar(value=True)
+        # Unannotated filter state
+        self.unannotated_filter_active = tk.BooleanVar(value=False)
+        
+        self.auto_save = tk.BooleanVar(value=self.session.get('auto_save', True))
+        self.show_labels = tk.BooleanVar(value=self.session.get('show_labels', True))
+        self.show_right_sidebar = tk.BooleanVar(value=self.session.get('show_right_sidebar', True))
         
         # UI Setup
         self.setup_ui()
@@ -69,6 +79,13 @@ class AnnotationApp:
         
         # Populate filter combobox
         self.update_filter_combo()
+        
+        # Handle window close to save session
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        
+        # Restore session after UI is ready
+        self.root.after(100, self.restore_session)
+
 
     def update_filter_combo(self):
         values = [f"{c['id']}: {c['name']}" for c in self.classes]
@@ -158,7 +175,145 @@ class AnnotationApp:
         if self.image_list:
             self.load_image(0)
         self.filter_combo.set("")
+        self.unannotated_filter_active.set(False)
+        self.update_progress_bar()
+    
+    # ==================== PRODUCTIVITY FEATURES ====================
+    
+    def restore_session(self):
+        """Restore last session state (called after UI is ready)."""
+        last_image_dir = self.session.get('last_image_dir', '')
+        last_output_dir = self.session.get('last_output_dir', '')
+        last_image_index = self.session.get('last_image_index', 0)
         
+        if last_image_dir and os.path.exists(last_image_dir):
+            self.image_dir = last_image_dir
+            if last_output_dir and os.path.exists(last_output_dir):
+                self.output_dir = last_output_dir
+            else:
+                self.output_dir = last_image_dir
+            
+            self.load_images()
+            self.update_dir_label()
+            
+            # Restore image index
+            if 0 <= last_image_index < len(self.image_list):
+                self.load_image(last_image_index)
+            elif self.image_list:
+                self.load_image(0)
+                
+            self.update_progress_bar()
+    
+    def save_current_session(self):
+        """Save current session state to file."""
+        session_state = {
+            "last_image_dir": self.image_dir,
+            "last_output_dir": self.output_dir,
+            "last_image_index": self.current_image_index,
+            "zoom_factor": self.zoom_factor,
+            "show_labels": self.show_labels.get(),
+            "auto_save": self.auto_save.get(),
+            "show_right_sidebar": self.show_right_sidebar.get()
+        }
+        save_session(SESSION_FILE, session_state)
+    
+    def on_close(self):
+        """Handle window close - save session and exit."""
+        # Auto save current annotations
+        if self.current_image_index != -1 and self.auto_save.get():
+            self.save_annotations()
+        
+        # Save session
+        self.save_current_session()
+        
+        # Destroy window
+        self.root.destroy()
+    
+    def update_progress_bar(self):
+        """Update the progress bar with annotation statistics."""
+        if not self.full_image_list:
+            self.progress_bar.set_value(0, 100, "No images loaded")
+            return
+        
+        total = len(self.full_image_list)
+        annotated = get_annotated_images(self.image_dir, self.output_dir, self.full_image_list)
+        count = len(annotated)
+        
+        if total > 0:
+            percent = int((count / total) * 100)
+        else:
+            percent = 0
+        
+        text = f"{count}/{total} ({percent}%)"
+        self.progress_bar.set_value(count, total, text)
+    
+    def toggle_unannotated_filter(self):
+        """Toggle filter to show only unannotated images (called by checkbox)."""
+        if self.unannotated_filter_active.get():
+            self._apply_unannotated_filter()
+        else:
+            self.clear_image_filter()
+    
+    def toggle_unannotated_filter_key(self):
+        """Toggle unannotated filter via keyboard (U key)."""
+        if self._is_input_focused():
+            return
+        # Toggle the checkbox value
+        current = self.unannotated_filter_active.get()
+        self.unannotated_filter_active.set(not current)
+        self.toggle_unannotated_filter()
+    
+    def _apply_unannotated_filter(self):
+        """Filter to show only images without annotations."""
+        if not self.output_dir:
+            messagebox.showwarning("Warning", "Please set Output Directory first.")
+            self.unannotated_filter_active.set(False)
+            return
+        
+        if not self.full_image_list:
+            messagebox.showwarning("Warning", "No images loaded.")
+            self.unannotated_filter_active.set(False)
+            return
+        
+        # Get annotated images
+        annotated = get_annotated_images(self.image_dir, self.output_dir, self.full_image_list)
+        
+        # Filter to unannotated only
+        unannotated = [f for f in self.full_image_list if f not in annotated]
+        
+        self.image_list = unannotated
+        self.image_list.sort(key=natural_sort_key)
+        
+        self.file_listbox.delete(0, tk.END)
+        for f in self.image_list:
+            self.file_listbox.insert(tk.END, f)
+        
+        if self.image_list:
+            self.load_image(0)
+        else:
+            self.current_image = None
+            self.canvas.delete("all")
+            self.root.title("AnnotationTool - All images annotated! 🎉")
+            messagebox.showinfo("Complete!", "All images have been annotated!")
+        
+        self.update_progress_bar()
+    
+    def select_class_by_number(self, num):
+        """Select a class by number key (1-9)."""
+        if self._is_input_focused():
+            return
+        
+        # num is 1-9, convert to 0-based index
+        index = num - 1
+        
+        if index < len(self.classes):
+            self.current_class_index = index
+            self.class_listbox.selection_clear(0, tk.END)
+            self.class_listbox.selection_set(index)
+            self.class_listbox.see(index)
+            self.update_cursor()
+            self.redraw_canvas()
+
     def setup_ui(self):
         # Toolbar (Top) for toggles
         self.toolbar = DarkFrame(self.root, height=30)
@@ -254,6 +409,12 @@ class AnnotationApp:
         DarkButton(btn_filter_frame, text="Filter", command=self.apply_image_filter, width=8).pack(side=tk.LEFT, padx=(0, 2), expand=True, fill=tk.X)
         DarkButton(btn_filter_frame, text="Clear", command=self.clear_image_filter, width=8).pack(side=tk.RIGHT, padx=(2, 0), expand=True, fill=tk.X)
 
+        # Unannotated filter checkbox
+        tk.Checkbutton(self.sidebar, text="Show Unannotated Only (U)", variable=self.unannotated_filter_active, 
+                       command=self.toggle_unannotated_filter,
+                       bg=THEME['bg_sidebar'], fg=THEME['button_highlight'], selectcolor=THEME['bg_sidebar'], 
+                       activebackground=THEME['bg_sidebar'], activeforeground=THEME['fg_highlight']).pack(anchor='w', padx=10, pady=2)
+
         # Container for listbox and scrollbar
         file_list_container = DarkFrame(self.sidebar, bg=THEME['bg_sidebar'])
         file_list_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
@@ -266,6 +427,12 @@ class AnnotationApp:
         
         self.file_listbox.configure(yscrollcommand=file_scrollbar.set)
         self.file_listbox.bind('<<ListboxSelect>>', self.on_file_select)
+        
+        # Progress Bar
+        SectionLabel(self.sidebar, text="Progress").pack(fill=tk.X, padx=10, pady=(10, 0))
+        self.progress_bar = DarkProgressBar(self.sidebar, height=22)
+        self.progress_bar.pack(fill=tk.X, padx=10, pady=5)
+        self.progress_bar.set_value(0, 100, "0/0 (0%)")
 
     def setup_right_sidebar(self):
         SectionLabel(self.right_sidebar, text="Box Labels").pack(fill=tk.X, padx=10, pady=(10, 0))
@@ -334,6 +501,13 @@ class AnnotationApp:
         # But Left/Right are standard. Let's leave them.
         self.root.bind("<Left>", lambda e: self.prev_image())
         self.root.bind("<Right>", lambda e: self.next_image())
+        
+        # Number keys 1-9 for quick class selection
+        for i in range(1, 10):
+            self.root.bind(f"<Key-{i}>", lambda e, num=i: self.select_class_by_number(num))
+        
+        # U key for unannotated filter toggle
+        self.root.bind("<u>", lambda e: self.toggle_unannotated_filter_key())
 
     def deselect_class(self):
         if self._is_input_focused(): return
@@ -1128,14 +1302,21 @@ class AnnotationApp:
             else:
                 self.image_dir = path
             
+            # Set default output dir if not set
+            if not self.output_dir:
+                self.output_dir = path
+            
             self.load_images()
             self.update_dir_label()
+            self.save_current_session() # Save switch
 
     def select_output_dir(self):
         path = filedialog.askdirectory(title="Select Output Directory")
         if path:
             self.output_dir = path
             self.update_dir_label()
+            self.update_progress_bar()
+            self.save_current_session() # Save switch
 
     def update_dir_label(self):
         text = f"Img: {os.path.basename(self.image_dir)}\nOut: {os.path.basename(self.output_dir)}"
@@ -1154,6 +1335,9 @@ class AnnotationApp:
         self.file_listbox.delete(0, tk.END)
         for f in self.image_list:
             self.file_listbox.insert(tk.END, f)
+        
+        # Update progress bar
+        self.update_progress_bar()
             
         if self.image_list:
             self.load_image(0)
@@ -1220,6 +1404,9 @@ class AnnotationApp:
              # For now, let's skip -1 classes.
              final_boxes = [b for b in valid_boxes if b['class_id'] != -1]
              save_yolo(txt_path, final_boxes)
+             
+        # Update progress bar whenever we save
+        self.update_progress_bar()
 
     # --- Canvas Drawing ---
     def redraw_canvas(self):

@@ -1,0 +1,86 @@
+# Predefined Color Palettes for the Annotation Tool
+
+PREDEFINED_THEMES = {
+    "Midnight Glass": {
+        'bg_main': '#0f0c29',
+        'bg_sidebar': '#1a1a2e',
+        'fg_text': '#e0e0e0',
+        'fg_highlight': '#ffffff',
+        'accent': '#3a0ca3',
+        'selection': '#4834d4',
+        'border': '#2d3436',
+        'button_bg': '#3a0ca3',
+        'button_fg': '#ffffff',
+        'button_hover': '#4361ee',
+        'entry_bg': '#16213e',
+        'entry_fg': '#ffffff',
+        'list_bg': '#16213e',
+        'button_highlight': '#4cc9f0'
+    },
+    "Emerald": {
+        'bg_main': '#061715',
+        'bg_sidebar': '#0a2622',
+        'fg_text': '#dcfce7',
+        'fg_highlight': '#ffffff',
+        'accent': '#059669',
+        'selection': '#10b981',
+        'border': '#064e3b',
+        'button_bg': '#059669',
+        'button_fg': '#ffffff',
+        'button_hover': '#10b981',
+        'entry_bg': '#064e3b',
+        'entry_fg': '#ffffff',
+        'list_bg': '#064e3b',
+        'button_highlight': '#34d399'
+    },
+    "Ruby": {
+        'bg_main': '#1a0606',
+        'bg_sidebar': '#2d0a0a',
+        'fg_text': '#fee2e2',
+        'fg_highlight': '#ffffff',
+        'accent': '#dc2626',
+        'selection': '#ef4444',
+        'border': '#7f1d1d',
+        'button_bg': '#dc2626',
+        'button_fg': '#ffffff',
+        'button_hover': '#ef4444',
+        'entry_bg': '#450a0a',
+        'entry_fg': '#ffffff',
+        'list_bg': '#450a0a',
+        'button_highlight': '#f87171'
+    },
+    "Amber": {
+        'bg_main': '#1a1206',
+        'bg_sidebar': '#2d1e0a',
+        'fg_text': '#fef3c7',
+        'fg_highlight': '#ffffff',
+        'accent': '#d97706',
+        'selection': '#f59e0b',
+        'border': '#78350f',
+        'button_bg': '#d97706',
+        'button_fg': '#ffffff',
+        'button_hover': '#f59e0b',
+        'entry_bg': '#451a03',
+        'entry_fg': '#ffffff',
+        'list_bg': '#451a03',
+        'button_highlight': '#fbbf24'
+    },
+    "Frost": {
+        'bg_main': '#f8fafc',
+        'bg_sidebar': '#f1f5f9',
+        'fg_text': '#1e293b',
+        'fg_highlight': '#0f172a',
+        'accent': '#3b82f6',
+        'selection': '#60a5fa',
+        'border': '#cbd5e1',
+        'button_bg': '#3b82f6',
+        'button_fg': '#ffffff',
+        'button_hover': '#60a5fa',
+        'entry_bg': '#ffffff',
+        'entry_fg': '#1e293b',
+        'list_bg': '#ffffff',
+        'button_highlight': '#2563eb'
+    }
+}
+
+DEFAULT_THEME = PREDEFINED_THEMES["Midnight Glass"]
