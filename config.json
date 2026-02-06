@@ -6,10 +6,10 @@
     "delete_box": "<q>",
     "copy": "<Control-c>",
     "paste": "<space>",
-    "duplicate": "<Control-d>",
     "edit_class": "<Control-e>",
     "undo": "<Control-z>",
     "redo": "<Control-y>",
+    "duplicate": "<Control-d>",
     "crosshair_color": "#FFFFFF",
     "crosshair_dash": [
         1,

@@ -110,6 +110,7 @@ class AnnotationController:
         # Listbox Binds
         self.view.class_listbox.bind('<<ListboxSelect>>', self.on_class_select)
         self.view.file_listbox.bind('<<ListboxSelect>>', self.on_file_select)
+        self.view.box_listbox.bind('<<ListboxSelect>>', self.on_box_list_select)
         
         # Canvas Binds
         self.view.canvas.bind('<Configure>', lambda e: self.view.redraw_canvas())
@@ -430,6 +431,26 @@ class AnnotationController:
         selection = self.view.file_listbox.curselection()
         if selection:
             self.load_image(selection[0])
+
+    def on_box_list_select(self, event):
+        selected = {
+            idx for idx in self.view.box_listbox.curselection()
+            if 0 <= idx < len(self.model.boxes)
+        }
+        if selected == self.model.selected_indices:
+            return
+        self.model.selected_indices = selected
+        self.view.redraw_canvas()
+
+    def refresh_class_dependent_views(self):
+        self.model.filtered_classes = [(i, c) for i, c in enumerate(self.model.classes)]
+        if not self.model.classes:
+            self.model.current_class_index = -1
+        elif self.model.current_class_index >= len(self.model.classes):
+            self.model.current_class_index = len(self.model.classes) - 1
+        self.filter_classes()
+        self.update_filter_combo()
+        self.refresh_batch_listboxes()
 
     def update_progress_bar(self):
         count, total = self.model.get_annotated_count()
@@ -886,9 +907,7 @@ class AnnotationController:
         
         save_classes("data/predefined_classes.txt", self.temp_classes)
         self.model.classes = load_classes("data/predefined_classes.txt")
-        self.update_class_list()
-        self.update_filter_combo()
-        self.refresh_batch_listboxes()
+        self.refresh_class_dependent_views()
         if self.model.current_image_index != -1:
             self.load_image(self.model.current_image_index)
         messagebox.showinfo("Success", "Classes updated!")
@@ -1003,9 +1022,7 @@ class AnnotationController:
         if messagebox.askyesno("Confirm", f"Overwrite current classes with {preset}?"):
             shutil.copy2(os.path.join("data", preset), "data/predefined_classes.txt")
             self.model.classes = load_classes("data/predefined_classes.txt")
-            self.update_class_list()
-            self.update_filter_combo()
-            self.refresh_batch_listboxes()
+            self.refresh_class_dependent_views()
             if self.model.current_image_index != -1:
                 self.load_image(self.model.current_image_index)
             messagebox.showinfo("Success", "Preset loaded!")
