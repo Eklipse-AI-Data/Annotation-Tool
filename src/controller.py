@@ -7,7 +7,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from PIL import Image
 from src.utils import (natural_sort_key, save_config, save_classes, load_classes,
                        create_class_mapping, update_annotation_file, backup_annotations,
-                       normalize_box, denormalize_box, get_recent_projects)
+                       normalize_box, denormalize_box, get_recent_projects, resize_images_to_lowres)
 from src.ui_components import DarkFrame, DarkLabel, DarkButton, DarkEntry, THEME
 
 class AnnotationController:
