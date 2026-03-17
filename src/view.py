@@ -183,6 +183,8 @@ class AnnotationView:
         self.copy_btn.pack(fill=tk.X, padx=10, pady=2)
         self.paste_btn = DarkButton(tools_section.content, text="Paste Boxes (Ctrl+V)")
         self.paste_btn.pack(fill=tk.X, padx=10, pady=2)
+        self.preview_clipboard_btn = DarkButton(tools_section.content, text="Preview Clipboard")
+        self.preview_clipboard_btn.pack(fill=tk.X, padx=10, pady=2)
         self.duplicate_btn = DarkButton(tools_section.content, text="Duplicate Boxes (Ctrl+D)")
         self.duplicate_btn.pack(fill=tk.X, padx=10, pady=2)
         
@@ -315,7 +317,8 @@ class AnnotationView:
                 ("?", "Toggle This Overlay"),
             ]),
             ("Presets", [
-                ("Ctrl+1-9", "Apply Box Preset"),
+                ("Tap Ctrl+1-9", "Apply Box Preset"),
+                ("Hold Ctrl+1-9", "Preview Box Preset"),
                 ("Ctrl+Shift+1-9", "Save Box Preset"),
             ]),
         ]
@@ -448,13 +451,19 @@ class AnnotationView:
         self.canvas.delete("box")
         self.canvas.delete("label")
         self.canvas.delete("handle")
+        self.canvas.delete("preview_box")
+        self.canvas.delete("preview_label")
         
         # Draw boxes
         for i, box in enumerate(self.model.boxes):
             is_selected = i in self.model.selected_indices
             self.draw_box_on_canvas(box, is_selected, i)
 
-    def draw_box_on_canvas(self, box, is_selected, index):
+        if self.model.preview_visible:
+            for i, box in enumerate(self.model.preview_boxes):
+                self.draw_box_on_canvas(box, False, i, preview=True)
+
+    def draw_box_on_canvas(self, box, is_selected, index, preview=False):
         if not self.model.current_image_pil: return
         
         iw, ih = self.model.current_image_pil.size
@@ -474,22 +483,42 @@ class AnnotationView:
         else:
             color = class_info['color'] if class_info else "#FFFFFF"
             label_text = class_info['name'] if class_info else "Unknown"
-        
-        width = 3 if is_selected else 2
-        outline = "#FFFFFF" if is_selected else color
+
+        if preview:
+            width = 2
+            outline = "#4CC9F0"
+            label_color = "#4CC9F0"
+            dash = (6, 4)
+            box_tag = "preview_box"
+            label_tag = "preview_label"
+            label_text = f"{label_text} (Preview)"
+        else:
+            width = 3 if is_selected else 2
+            outline = "#FFFFFF" if is_selected else color
+            label_color = color
+            dash = None
+            box_tag = "box"
+            label_tag = "label"
         
         # Draw Rect
-        self.canvas.create_rectangle(cx1, cy1, cx2, cy2, outline=outline, width=width, tags=("box", f"box_{index}"))
+        rect_kwargs = {
+            'outline': outline,
+            'width': width,
+            'tags': (box_tag, f"{box_tag}_{index}")
+        }
+        if dash:
+            rect_kwargs['dash'] = dash
+        self.canvas.create_rectangle(cx1, cy1, cx2, cy2, **rect_kwargs)
         
         # Draw Label
         if self.model.show_labels.get():
             text_x = cx1
             text_y = cy1 - 15
             if text_y < 0: text_y = cy1 + 5
-            self.canvas.create_text(text_x, text_y, text=label_text, fill=color, anchor=tk.SW, font=(THEME['font_family_sans'], THEME['font_size_main']-1, "bold"), tags="label")
+            self.canvas.create_text(text_x, text_y, text=label_text, fill=label_color, anchor=tk.SW, font=(THEME['font_family_sans'], THEME['font_size_main']-1, "bold"), tags=label_tag)
 
         # Draw handles if selected
-        if is_selected:
+        if is_selected and not preview:
             h_size = 6
             handles = [
                 (cx1, cy1, "nw"), (cx2, cy1, "ne"),

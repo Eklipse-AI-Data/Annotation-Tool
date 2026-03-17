@@ -37,6 +37,10 @@ class AnnotationModel:
         self.boxes = []
         self.selected_indices = set()
         self.clipboard = []
+        self.preview_boxes = []
+        self.preview_visible = False
+        self.preview_source = None
+        self.preview_slot = None
         self.current_class_index = -1
         
         # Filter State
@@ -65,6 +69,7 @@ class AnnotationModel:
         
         # Bounding Box Presets (Slots 1-9)
         self.presets = {}
+        self.load_scoped_presets()
         
         # Image Preloader for faster navigation
         self.image_preloader = ImagePreloader(cache_size=7)
@@ -109,6 +114,7 @@ class AnnotationModel:
         return True
 
     def save_session(self):
+        self._store_presets_for_current_scope()
         session_state = {
             "last_image_dir": self.image_dir,
             "last_output_dir": self.output_dir,
@@ -118,9 +124,53 @@ class AnnotationModel:
             "auto_save": self.auto_save.get(),
             "show_right_sidebar": self.show_right_sidebar.get(),
             "show_left_sidebar": self.show_left_sidebar.get(),
-            "theme_name": self.current_theme_name
+            "theme_name": self.current_theme_name,
+            "box_presets_by_scope": self.session.get('box_presets_by_scope', {})
         }
+        self.session.update(session_state)
         save_session(SESSION_FILE, session_state)
+
+    def get_preset_scope_key(self):
+        image_dir = os.path.abspath(self.image_dir) if self.image_dir else "__no_image_dir__"
+        output_dir = os.path.abspath(self.output_dir) if self.output_dir else "__no_output_dir__"
+        class_names = [c['name'] for c in self.classes]
+        class_signature = "||".join(class_names) if class_names else "__no_classes__"
+        return f"{image_dir}::{output_dir}::{class_signature}"
+
+    def load_scoped_presets(self):
+        scope_key = self.get_preset_scope_key()
+        preset_store = self.session.get('box_presets_by_scope', {})
+        scoped_presets = preset_store.get(scope_key, {})
+        self.presets = {
+            int(slot): [dict(box) for box in boxes]
+            for slot, boxes in scoped_presets.items()
+            if str(slot).isdigit()
+        }
+
+    def _store_presets_for_current_scope(self):
+        scope_key = self.get_preset_scope_key()
+        preset_store = self.session.setdefault('box_presets_by_scope', {})
+
+        if self.presets:
+            preset_store[scope_key] = {
+                str(slot): [dict(box) for box in boxes]
+                for slot, boxes in sorted(self.presets.items())
+                if boxes
+            }
+        else:
+            preset_store.pop(scope_key, None)
+
+    def set_preview(self, boxes, source, slot=None):
+        self.preview_boxes = [dict(box) for box in boxes]
+        self.preview_visible = bool(self.preview_boxes)
+        self.preview_source = source if self.preview_visible else None
+        self.preview_slot = slot if self.preview_visible else None
+
+    def clear_preview(self):
+        self.preview_boxes = []
+        self.preview_visible = False
+        self.preview_source = None
+        self.preview_slot = None
 
     def load_annotations(self, filename):
         self.boxes = []
