@@ -7,13 +7,20 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from PIL import Image
 from src.utils import (natural_sort_key, save_config, save_classes, load_classes,
                        create_class_mapping, update_annotation_file, backup_annotations,
-                       normalize_box, denormalize_box, get_recent_projects, resize_images_to_lowres)
+                       normalize_box, denormalize_box, get_recent_projects,
+                       resize_images_to_lowres)
 from src.ui_components import DarkFrame, DarkLabel, DarkButton, DarkEntry, THEME
 
 class AnnotationController:
     def __init__(self, model, view):
         self.model = model
         self.view = view
+        self.preset_hold_delay_ms = 250
+        self.pending_preset_preview_after_id = None
+        self.pending_preset_slot = None
+        self.pending_preset_key = None
+        self.pending_preset_preview_shown = False
+        self.preset_preview_lock = False
         
         self.bind_events()
         self.init_state()
@@ -89,6 +96,132 @@ class AnnotationController:
         if theme_name in PREDEFINED_THEMES:
             self.view.apply_theme(PREDEFINED_THEMES[theme_name])
 
+    def refresh_preset_scope(self):
+        self.model.load_scoped_presets()
+        self.clear_preview(redraw=False)
+        if hasattr(self, 'box_presets_lb') and self.box_presets_lb.winfo_exists():
+            self.update_box_presets_list()
+
+    def clear_preview(self, redraw=True):
+        if not self.model.preview_visible and not self.model.preview_boxes:
+            return False
+
+        self.model.clear_preview()
+        if redraw and self.model.current_image_pil:
+            self.view.redraw_canvas()
+        return True
+
+    def toggle_clipboard_preview(self):
+        if self._is_input_focused():
+            return
+        if not self.model.current_image_pil:
+            self.view.update_status("Load an image to preview the clipboard")
+            return
+        if self.model.preview_visible and self.model.preview_source == 'clipboard':
+            self.clear_preview()
+            self.view.update_status("Clipboard preview hidden")
+            return
+        if not self.model.clipboard:
+            self.view.update_status("Clipboard is empty")
+            return
+
+        self.model.set_preview(self.model.clipboard, 'clipboard')
+        self.view.redraw_canvas()
+        self.view.update_status(f"Previewing clipboard: {len(self.model.preview_boxes)} box(es)")
+
+    def preview_preset(self, slot, toggle=True):
+        if not self.model.current_image_pil:
+            self.view.update_status("Load an image to preview a preset")
+            return
+
+        preset_boxes = self.model.presets.get(slot, [])
+        if not preset_boxes:
+            self.view.update_status(f"Preset {slot} is empty")
+            return
+
+        if toggle and self.model.preview_visible and self.model.preview_source == 'preset' and self.model.preview_slot == slot:
+            self.clear_preview()
+            self.view.update_status(f"Preset {slot} preview hidden")
+            return
+
+        self.model.set_preview(preset_boxes, 'preset', slot=slot)
+        self.view.redraw_canvas()
+        self.view.update_status(f"Previewing Preset {slot}: {len(self.model.preview_boxes)} box(es)")
+
+    def preview_selected_slot(self):
+        sel = self.box_presets_lb.curselection()
+        if not sel:
+            messagebox.showwarning("Warning", "Please select a slot in the list first.")
+            return
+        self.preview_preset(sel[0] + 1)
+
+    def _cancel_pending_preset_hold(self, reset_preview_lock=False):
+        if self.pending_preset_preview_after_id:
+            self.view.root.after_cancel(self.pending_preset_preview_after_id)
+        self.pending_preset_preview_after_id = None
+        self.pending_preset_slot = None
+        self.pending_preset_key = None
+        self.pending_preset_preview_shown = False
+        if reset_preview_lock:
+            self.preset_preview_lock = False
+
+    def _begin_preset_hold(self, slot, key_name):
+        if self.is_focus_on_entry():
+            return
+
+        if self.preset_preview_lock:
+            return
+
+        if self.pending_preset_slot == slot and self.pending_preset_key == key_name:
+            return
+
+        self._cancel_pending_preset_hold()
+
+        self.pending_preset_slot = slot
+        self.pending_preset_key = key_name
+
+        def show_preview():
+            self.pending_preset_preview_after_id = None
+            self.pending_preset_preview_shown = True
+            self.preset_preview_lock = True
+            self.preview_preset(slot, toggle=False)
+
+        self.pending_preset_preview_after_id = self.view.root.after(self.preset_hold_delay_ms, show_preview)
+
+    def _finish_preset_hold(self, slot, key_name, release_control=False):
+        if self.pending_preset_slot != slot or self.pending_preset_key != key_name:
+            return
+
+        if self.pending_preset_preview_shown:
+            if release_control and self.model.preview_visible and self.model.preview_source == 'preset' and self.model.preview_slot == slot:
+                self.clear_preview()
+                self.view.update_status(f"Preset {slot} preview hidden")
+            self._cancel_pending_preset_hold(reset_preview_lock=release_control)
+            return
+
+        self._cancel_pending_preset_hold()
+
+        self.apply_preset(slot)
+
+    def _on_control_release(self, event):
+        if self.pending_preset_slot is None:
+            if self.preset_preview_lock and self.model.preview_visible and self.model.preview_source == 'preset':
+                slot = self.model.preview_slot
+                self.clear_preview()
+                if slot is not None:
+                    self.view.update_status(f"Preset {slot} preview hidden")
+            self.preset_preview_lock = False
+            return
+
+        slot = self.pending_preset_slot
+        key_name = self.pending_preset_key
+        self._finish_preset_hold(slot, key_name, release_control=True)
+
+    def _bind_preset_hold_shortcuts(self, slot, press_pattern, release_pattern, key_name):
+        root = self.view.root
+        root.bind(press_pattern, lambda e, num=slot, key=key_name: self._begin_preset_hold(num, key) if not (e.state & 0x0001) else None)
+        root.bind(release_pattern, lambda e, num=slot, key=key_name: self._finish_preset_hold(num, key, release_control=False))
+
     def bind_events(self):
         # UI Button Commands
         self.view.open_images_btn.configure(command=self.select_image_dir)
@@ -102,6 +235,7 @@ class AnnotationController:
         self.view.clear_filter_btn.configure(command=self.clear_image_filter)
         self.view.copy_btn.configure(command=self.copy_boxes)
         self.view.paste_btn.configure(command=self.paste_boxes)
+        self.view.preview_clipboard_btn.configure(command=self.toggle_clipboard_preview)
         self.view.duplicate_btn.configure(command=self.duplicate_boxes)
         self.view.validate_btn.configure(command=self.show_validation_dialog)
         self.view.shortcut_help_btn.configure(command=self.toggle_shortcut_overlay)
@@ -148,6 +282,8 @@ class AnnotationController:
         root.bind(cfg['deselect'], lambda e: self.deselect_class())  # Escape always works (to leave entry)
         root.bind(cfg['undo'], shortcut(self.undo))
         root.bind(cfg['redo'], shortcut(self.redo))
+        root.bind("<KeyRelease-Control_L>", self._on_control_release)
+        root.bind("<KeyRelease-Control_R>", self._on_control_release)
         
         # Secondary Navigation
         root.bind("<Left>", shortcut(self.prev_image))
@@ -155,11 +291,11 @@ class AnnotationController:
         
         # Bounding Box Presets shortcuts - robust handling for various layouts and Numpad
         for i in range(1, 10):
-            # Standard number keys
-            root.bind(f"<Control-Key-{i}>", lambda e, num=i: self.apply_preset(num) if not self.is_focus_on_entry() else None)
+            # Standard number keys: tap to apply, hold to preview
+            self._bind_preset_hold_shortcuts(i, f"<Control-Key-{i}>", f"<KeyRelease-{i}>", f"digit_{i}")
             root.bind(f"<Control-Shift-Key-{i}>", lambda e, num=i: self.save_preset(num) if not self.is_focus_on_entry() else None)
             # Numpad compatibility
-            root.bind(f"<Control-KP_{i}>", lambda e, num=i: self.apply_preset(num) if not self.is_focus_on_entry() else None)
+            self._bind_preset_hold_shortcuts(i, f"<Control-KP_{i}>", f"<KeyRelease-KP_{i}>", f"kp_{i}")
             root.bind(f"<Control-Shift-KP_{i}>", lambda e, num=i: self.save_preset(num) if not self.is_focus_on_entry() else None)
             
         # Common shifted symbols for Ctrl+Shift+Number (specifically helps on Windows/Windows Layouts)
@@ -218,6 +354,8 @@ class AnnotationController:
 
             if not self.model.output_dir:
                 self.model.output_dir = path
+
+            self.refresh_preset_scope()
             
             self.view.update_dir_label(self.model.image_dir)
             self.load_images()
@@ -233,6 +371,7 @@ class AnnotationController:
         directory = filedialog.askdirectory()
         if directory:
             self.model.output_dir = directory
+            self.refresh_preset_scope()
             # Reload annotations for current image if one is loaded
             if self.model.image_list and self.model.current_image_index != -1:
                 filename = self.model.image_list[self.model.current_image_index]
@@ -240,6 +379,7 @@ class AnnotationController:
                 self.view.redraw_canvas()
             
             self.update_progress_bar()
+            self.model.save_session()
             messagebox.showinfo("Info", f"Output directory set to: {directory}")
 
     def load_images(self):
@@ -261,6 +401,8 @@ class AnnotationController:
             # Auto save previous image annotations
             if self.model.current_image_index != -1 and self.model.auto_save.get():
                 self.model.save_annotations()
+
+            self.clear_preview(redraw=False)
 
             self.model.current_image_index = index
             filename = self.model.image_list[index]
@@ -362,8 +504,13 @@ class AnnotationController:
         lb.bind('<<ListboxSelect>>', on_select)
 
     def deselect_class(self):
+        preview_cleared = self.clear_preview(redraw=False)
         self.model.current_class_index = -1
         self.update_class_list()
+        if preview_cleared:
+            if self.model.current_image_pil:
+                self.view.redraw_canvas()
+            self.view.update_status("Preview cleared")
 
     def select_class_by_number(self, num):
         idx = num - 1
@@ -606,6 +753,7 @@ class AnnotationController:
         # Load new project
         self.model.image_dir = image_dir
         self.model.output_dir = output_dir if output_dir and os.path.isdir(output_dir) else image_dir
+        self.refresh_preset_scope()
         
         self.view.update_dir_label(self.model.image_dir)
         self.load_images()
@@ -774,7 +922,7 @@ class AnnotationController:
 
     def setup_box_presets_tab(self, parent):
         DarkLabel(parent, text="Manage Bounding Box Presets", font=("Segoe UI", 12, "bold")).pack(pady=10)
-        info_text = "View and manage temporarily stored bounding box slots (1-9).\nThese are cleared when the application is closed."
+        info_text = "View and manage bounding box slots (1-9).\nPresets are remembered per project and class set across app restarts."
         DarkLabel(parent, text=info_text, wraplength=550).pack(pady=5)
         
         container = DarkFrame(parent)
@@ -790,6 +938,7 @@ class AnnotationController:
         btn_frame = DarkFrame(parent)
         btn_frame.pack(fill=tk.X, padx=10, pady=10)
         
+        DarkButton(btn_frame, text="Preview Selected Slot", command=self.preview_selected_slot).pack(fill=tk.X, pady=2)
         DarkButton(btn_frame, text="Save Selected/All to Selected Slot", command=self.save_to_selected_slot, bg=THEME['accent']).pack(fill=tk.X, pady=2)
         DarkButton(btn_frame, text="Clear All Presets", command=self.clear_all_presets, bg="#882222").pack(fill=tk.X, pady=2)
 
@@ -810,10 +959,13 @@ class AnnotationController:
             self.box_presets_lb.insert(tk.END, f"  {status}")
 
     def clear_all_presets(self):
-        if messagebox.askyesno("Confirm", "Clear all temporarily stored box presets?"):
+        if messagebox.askyesno("Confirm", "Clear all stored box presets for the current project and class set?"):
             self.model.presets.clear()
+            self.clear_preview(redraw=False)
+            self.model.save_session()
             self.update_box_presets_list()
-            self.view.update_status("All box presets cleared")
+            self.view.redraw_canvas()
+            self.view.update_status("All box presets cleared for this project/class set")
 
     def save_settings(self, window):
         save_config("config.json", self.model.config)
@@ -908,6 +1060,7 @@ class AnnotationController:
         save_classes("data/predefined_classes.txt", self.temp_classes)
         self.model.classes = load_classes("data/predefined_classes.txt")
         self.refresh_class_dependent_views()
+        self.refresh_preset_scope()
         if self.model.current_image_index != -1:
             self.load_image(self.model.current_image_index)
         messagebox.showinfo("Success", "Classes updated!")
@@ -1023,6 +1176,7 @@ class AnnotationController:
             shutil.copy2(os.path.join("data", preset), "data/predefined_classes.txt")
             self.model.classes = load_classes("data/predefined_classes.txt")
             self.refresh_class_dependent_views()
+            self.refresh_preset_scope()
             if self.model.current_image_index != -1:
                 self.load_image(self.model.current_image_index)
             messagebox.showinfo("Success", "Preset loaded!")
@@ -1187,30 +1341,33 @@ class AnnotationController:
             self.view.redraw_canvas()
             
         elif self.model.move_mode:
-            box = self.model.boxes[self.model.active_box_index]
-            x1, y1, x2, y2 = denormalize_box(box, iw, ih)
             dx = (cx - self.model.start_x) / self.view.scale
             dy = (cy - self.model.start_y) / self.view.scale
-            
-            # Move all selected boxes
+
+            selected_boxes = []
             for idx in self.model.selected_indices:
-                b = self.model.boxes[idx]
-                x1, y1, x2, y2 = denormalize_box(b, iw, ih)
-                w, h = x2 - x1, y2 - y1
-                nx1 = x1 + dx; ny1 = y1 + dy
-                nx2 = x2 + dx; ny2 = y2 + dy
-                
-                # Simple clamping for the primary box
-                if nx1 < 0: nx2 -= nx1; nx1 = 0
-                if ny1 < 0: ny2 -= ny1; ny1 = 0
-                if nx2 > iw: nx1 -= (nx2 - iw); nx2 = iw
-                if ny2 > ih: ny1 -= (ny2 - ih); ny2 = ih
-                
-                new_box = normalize_box(nx1, ny1, nx2, ny2, iw, ih)
-                new_box['class_id'] = b['class_id']
+                box = self.model.boxes[idx]
+                x1, y1, x2, y2 = denormalize_box(box, iw, ih)
+                selected_boxes.append((idx, x1, y1, x2, y2, box['class_id']))
+
+            if not selected_boxes:
+                return
+
+            group_min_x = min(x1 for _, x1, _, _, _, _ in selected_boxes)
+            group_min_y = min(y1 for _, _, y1, _, _, _ in selected_boxes)
+            group_max_x = max(x2 for _, _, _, x2, _, _ in selected_boxes)
+            group_max_y = max(y2 for _, _, _, _, y2, _ in selected_boxes)
+
+            dx = max(-group_min_x, min(dx, iw - group_max_x))
+            dy = max(-group_min_y, min(dy, ih - group_max_y))
+
+            for idx, x1, y1, x2, y2, class_id in selected_boxes:
+                new_box = normalize_box(x1 + dx, y1 + dy, x2 + dx, y2 + dy, iw, ih)
+                new_box['class_id'] = class_id
                 self.model.boxes[idx] = new_box
-            
-            self.model.start_x, self.model.start_y = cx, cy
+
+            self.model.start_x += dx * self.view.scale
+            self.model.start_y += dy * self.view.scale
             self.view.redraw_canvas()
 
     def on_canvas_release(self, event):
@@ -1412,6 +1569,9 @@ class AnnotationController:
             self.model.clipboard = [self.model.boxes[i].copy() for i in self.model.selected_indices]
         else:
             self.model.clipboard = [b.copy() for b in self.model.boxes]
+        if self.model.preview_visible and self.model.preview_source == 'clipboard':
+            self.model.set_preview(self.model.clipboard, 'clipboard')
+            self.view.redraw_canvas()
         messagebox.showinfo("Info", f"Copied {len(self.model.clipboard)} boxes.")
 
     def paste_boxes(self):
@@ -1421,8 +1581,10 @@ class AnnotationController:
         self.model.save_state()
         for box in self.model.clipboard:
             self.model.boxes.append(box.copy())
+        self.clear_preview(redraw=False)
         self.view.redraw_canvas()
         self.view.update_box_list()
+        self.view.update_status(f"Pasted {len(self.model.clipboard)} box(es)")
 
     def duplicate_boxes(self):
         """Duplicate selected boxes (or all if none selected) with a small offset."""
@@ -1478,6 +1640,10 @@ class AnnotationController:
             return
 
         self.model.presets[slot] = boxes_to_save
+        self.model.save_session()
+        if self.model.preview_visible and self.model.preview_source == 'preset' and self.model.preview_slot == slot:
+            self.model.set_preview(boxes_to_save, 'preset', slot=slot)
+            self.view.redraw_canvas()
         msg = f"Stored {len(boxes_to_save)} {source} boxes in Preset {slot}"
         print(f"DEBUG: {msg}")
         self.view.update_status(msg)
@@ -1498,7 +1664,7 @@ class AnnotationController:
         self.model.save_state()
         for box in preset_boxes:
             self.model.boxes.append(box.copy())
-        
+        self.clear_preview(redraw=False)
         self.view.redraw_canvas()
         self.view.update_box_list()
         msg = f"Applied Preset {slot} ({len(preset_boxes)} boxes)"

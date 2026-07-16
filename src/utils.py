@@ -42,6 +42,7 @@ def load_config(path):
         "delete_box": "<Delete>",
         "copy": "<Control-c>",
         "paste": "<Control-v>",
+        "duplicate": "<Control-d>",
         "edit_class": "<Control-e>",
         "undo": "<Control-z>",
         "redo": "<Control-y>"
@@ -78,7 +79,11 @@ def get_default_session():
         "zoom_factor": 1.0,
         "show_labels": True,
         "auto_save": True,
-        "show_right_sidebar": True
+        "show_right_sidebar": True,
+        "show_left_sidebar": True,
+        "theme_name": "Midnight Glass",
+        "recent_projects": [],
+        "box_presets_by_scope": {}
     }
 
 def load_session(path):
@@ -104,8 +109,10 @@ def load_session(path):
 def save_session(path, session_state):
     """Save session state to JSON file."""
     try:
+        merged_state = load_session(path)
+        merged_state.update(session_state)
         with open(path, 'w') as f:
-            json.dump(session_state, f, indent=4)
+            json.dump(merged_state, f, indent=4)
     except Exception as e:
         print(f"Error saving session: {e}")
 
