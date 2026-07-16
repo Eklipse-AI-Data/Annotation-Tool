@@ -2,9 +2,10 @@ import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk
 from src.utils import denormalize_box
-from src.ui_components import (DarkButton, DarkLabel, DarkListbox, DarkFrame, SectionLabel, 
-                               SidebarFrame, THEME, DarkEntry, DarkProgressBar, ScrollableFrame, 
-                               update_ui_theme, TabbedFrame, CollapsibleFrame)
+from src.ui_components import (DarkButton, DarkLabel, DarkFrame, SectionLabel,
+                               SidebarFrame, THEME, DarkEntry, DarkProgressBar,
+                               update_ui_theme, TabbedFrame, CollapsibleFrame, DarkTreeview, Tooltip,
+                               ThumbnailStrip)
 
 class AnnotationView:
     def __init__(self, root, model):
@@ -22,10 +23,18 @@ class AnnotationView:
         self.cached_dims = None
         self.cached_image_obj = None
         self.tk_image = None
+        self.crosshair_ids = None
         
         # Shortcut overlay state
         self.shortcut_overlay_visible = False
-        
+
+        # List state (Treeview-based lists)
+        self._suppress_list_events = False
+        self.class_swatches = {}
+        self._class_iids = []
+        self._class_sig = None
+
+        self.setup_ttk_style()
         self.setup_ui()
 
     def setup_ui(self):
@@ -46,15 +55,27 @@ class AnnotationView:
         self.validate_btn = DarkButton(self.toolbar, text="✓ Validate")
         self.validate_btn.pack(side=tk.LEFT, padx=5, pady=2)
         
-        self.warning_label = DarkLabel(self.toolbar, text="", fg="#FFD700", bg=THEME['bg_main'])
+        self.warning_label = DarkLabel(self.toolbar, text="", fg=THEME['warning'], bg=THEME['bg_main'])
         self.warning_label.pack(side=tk.LEFT, padx=5, pady=2)
         
         self.toggle_sidebar_btn = DarkButton(self.toolbar, text="📜 Box List")
         self.toggle_sidebar_btn.pack(side=tk.RIGHT, padx=5, pady=2)
+
+        self.toggle_filmstrip_btn = DarkButton(self.toolbar, text="🎞 Filmstrip")
+        self.toggle_filmstrip_btn.pack(side=tk.RIGHT, padx=5, pady=2)
         
         # Shortcut help button
         self.shortcut_help_btn = DarkButton(self.toolbar, text="? Keys")
         self.shortcut_help_btn.pack(side=tk.RIGHT, padx=5, pady=2)
+
+        # Toolbar tooltips
+        Tooltip(self.toggle_left_btn, "Toggle project sidebar")
+        Tooltip(self.undo_btn, "Undo (Ctrl+Z)")
+        Tooltip(self.redo_btn, "Redo (Ctrl+Y)")
+        Tooltip(self.validate_btn, "Validate annotations on this image")
+        Tooltip(self.toggle_sidebar_btn, "Toggle box list sidebar")
+        Tooltip(self.toggle_filmstrip_btn, "Toggle thumbnail filmstrip")
+        Tooltip(self.shortcut_help_btn, "Keyboard shortcuts (?)")
         
         # Main Layout
         self.main_container = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, bg=THEME['bg_main'], sashwidth=4, sashrelief=tk.FLAT)
@@ -145,7 +166,7 @@ class AnnotationView:
         
         file_list_container = DarkFrame(file_section.content, bg=THEME['bg_sidebar'])
         file_list_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        self.file_listbox = DarkListbox(file_list_container, height=15)
+        self.file_listbox = DarkTreeview(file_list_container, selectmode='browse', height=15)
         self.file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         file_scrollbar = tk.Scrollbar(file_list_container, orient=tk.VERTICAL, command=self.file_listbox.yview)
         file_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -163,16 +184,13 @@ class AnnotationView:
         class_section = CollapsibleFrame(classes_tab, "CLASS LIST")
         class_section.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        self.create_template_btn = DarkButton(class_section.content, text="Create Template")
-        self.create_template_btn.pack(fill=tk.X, padx=10, pady=2)
-        
         self.class_search_var = tk.StringVar()
         search_frame = DarkFrame(class_section.content)
         search_frame.pack(fill=tk.X, padx=10, pady=(5, 0))
         self.class_search_entry = DarkEntry(search_frame, textvariable=self.class_search_var)
         self.class_search_entry.pack(fill=tk.X)
         
-        self.class_listbox = DarkListbox(class_section.content, height=15)
+        self.class_listbox = DarkTreeview(class_section.content, selectmode='browse', height=15)
         self.class_listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
         # Tools (Collapsible)
@@ -213,6 +231,16 @@ class AnnotationView:
         self.h_scroll.grid(row=1, column=0, sticky="ew")
         self.canvas.configure(yscrollcommand=self.v_scroll.set, xscrollcommand=self.h_scroll.set)
 
+        # Thumbnail filmstrip under the canvas
+        self.thumb_strip = ThumbnailStrip(self.canvas_frame)
+        self.thumb_strip.grid(row=2, column=0, columnspan=2, sticky="ew")
+
+    def toggle_filmstrip(self, show):
+        if show:
+            self.thumb_strip.grid(row=2, column=0, columnspan=2, sticky="ew")
+        else:
+            self.thumb_strip.grid_remove()
+
     def setup_right_sidebar(self):
         # Create a simple frame instead of a scrollable one to avoid double-scrolling
         self.right_container = DarkFrame(self.right_sidebar, bg=THEME['bg_sidebar'])
@@ -223,7 +251,7 @@ class AnnotationView:
         list_container = DarkFrame(self.right_container, bg=THEME['bg_sidebar'])
         list_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
-        self.box_listbox = DarkListbox(list_container, selectmode=tk.EXTENDED)
+        self.box_listbox = DarkTreeview(list_container, selectmode='extended')
         self.box_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         box_scrollbar = tk.Scrollbar(list_container, orient=tk.VERTICAL, command=self.box_listbox.yview)
@@ -246,15 +274,29 @@ class AnnotationView:
             self.main_container.remove(self.sidebar)
 
     def draw_crosshair(self, x, y):
-        self.canvas.delete("crosshair")
-        if x < 0 or y < 0: return
-        
-        # Draw lines spanning the whole canvas
+        # Move two persistent line items instead of delete+recreate per event
+        if x < 0 or y < 0:
+            if self.crosshair_ids:
+                for item in self.crosshair_ids:
+                    self.canvas.itemconfigure(item, state='hidden')
+            return
+
         cw = self.canvas.winfo_width()
         ch = self.canvas.winfo_height()
-        
-        self.canvas.create_line(0, y, cw, y, fill='#FFFFFF', dash=(2, 2), tags="crosshair")
-        self.canvas.create_line(x, 0, x, ch, fill='#FFFFFF', dash=(2, 2), tags="crosshair")
+
+        if not self.crosshair_ids:
+            color = self.model.config.get('crosshair_color') or THEME.get('crosshair', '#FFFFFF')
+            dash = tuple(self.model.config.get('crosshair_dash', (2, 2)))
+            h_line = self.canvas.create_line(0, y, cw, y, fill=color, dash=dash, tags="crosshair")
+            v_line = self.canvas.create_line(x, 0, x, ch, fill=color, dash=dash, tags="crosshair")
+            self.crosshair_ids = (h_line, v_line)
+        else:
+            h_line, v_line = self.crosshair_ids
+            self.canvas.coords(h_line, 0, y, cw, y)
+            self.canvas.coords(v_line, x, 0, x, ch)
+            self.canvas.itemconfigure(h_line, state='normal')
+            self.canvas.itemconfigure(v_line, state='normal')
+        self.canvas.tag_raise("crosshair")
 
     def toggle_shortcut_overlay(self):
         """Toggle the keyboard shortcut overlay on the canvas."""
@@ -277,7 +319,7 @@ class AnnotationView:
         # Semi-transparent background
         self.canvas.create_rectangle(
             cw * 0.15, ch * 0.1, cw * 0.85, ch * 0.9,
-            fill='#000000', stipple='gray50', outline=THEME['accent'], width=2,
+            fill=THEME['bg_main'], stipple='gray50', outline=THEME['accent'], width=2,
             tags="shortcut_overlay"
         )
         
@@ -312,6 +354,8 @@ class AnnotationView:
             ]),
             ("View", [
                 ("Mouse Wheel", "Zoom In/Out"),
+                ("Ctrl + / -", "Zoom In/Out"),
+                ("Ctrl+0", "Fit to Window"),
                 ("Right Click + Drag", "Pan"),
                 ("U", "Toggle Unannotated Filter"),
                 ("?", "Toggle This Overlay"),
@@ -350,14 +394,14 @@ class AnnotationView:
                     self.canvas.create_text(
                         x_base, y,
                         text=key,
-                        fill='#FFFFFF', font=(THEME['font_family_sans'], 10, 'bold'),
+                        fill=THEME['fg_highlight'], font=(THEME['font_family_sans'], 10, 'bold'),
                         anchor='w', tags="shortcut_overlay"
                     )
                     # Description
                     self.canvas.create_text(
                         x_base + 130, y,
                         text=description,
-                        fill='#CCCCCC', font=(THEME['font_family_sans'], 10),
+                        fill=THEME['fg_text'], font=(THEME['font_family_sans'], 10),
                         anchor='w', tags="shortcut_overlay"
                     )
                     y += 22
@@ -368,24 +412,24 @@ class AnnotationView:
         self.canvas.create_text(
             cw / 2, ch * 0.87,
             text="Press ? or click 'Keys' button to close",
-            fill='#888888', font=(THEME['font_family_sans'], 10, 'italic'),
+            fill=THEME['fg_text'], font=(THEME['font_family_sans'], 10, 'italic'),
             tags="shortcut_overlay"
         )
 
     def update_warning_indicator(self, warnings):
         """Update the warning indicator in the toolbar."""
         if not warnings:
-            self.warning_label.config(text="✓", fg="#00FF00")
+            self.warning_label.config(text="✓", fg=THEME['success'])
         else:
             error_count = sum(1 for w in warnings if w['severity'] == 'error')
             warn_count = sum(1 for w in warnings if w['severity'] == 'warning')
-            
+
             if error_count > 0:
-                self.warning_label.config(text=f"⚠ {error_count} errors", fg="#FF4444")
+                self.warning_label.config(text=f"⚠ {error_count} errors", fg=THEME['error'])
             elif warn_count > 0:
-                self.warning_label.config(text=f"⚠ {warn_count} warnings", fg="#FFD700")
+                self.warning_label.config(text=f"⚠ {warn_count} warnings", fg=THEME['warning'])
             else:
-                self.warning_label.config(text=f"ℹ {len(warnings)} info", fg="#4CC9F0")
+                self.warning_label.config(text=f"ℹ {len(warnings)} info", fg=THEME['info'])
 
     def update_status(self, text):
         self.status_label.config(text=text)
@@ -393,6 +437,7 @@ class AnnotationView:
     def redraw_canvas(self, fast=False):
         if not self.model.current_image_pil:
             self.canvas.delete("all")
+            self.crosshair_ids = None
             return
             
         # Calculate ideal dimensions
@@ -463,38 +508,62 @@ class AnnotationView:
             for i, box in enumerate(self.model.preview_boxes):
                 self.draw_box_on_canvas(box, False, i, preview=True)
 
-    def draw_box_on_canvas(self, box, is_selected, index, preview=False):
-        if not self.model.current_image_pil: return
-        
+    def _box_canvas_coords(self, box):
+        """Map a normalized box to canvas coordinates (shared by draw and move)."""
         iw, ih = self.model.current_image_pil.size
         x1, y1, x2, y2 = denormalize_box(box, iw, ih)
-        
-        # Scale to canvas
-        cx1 = x1 * self.scale + self.offset_x
-        cy1 = y1 * self.scale + self.offset_y
-        cx2 = x2 * self.scale + self.offset_x
-        cy2 = y2 * self.scale + self.offset_y
-        
+        return (x1 * self.scale + self.offset_x,
+                y1 * self.scale + self.offset_y,
+                x2 * self.scale + self.offset_x,
+                y2 * self.scale + self.offset_y)
+
+    def _label_position(self, cx1, cy1):
+        text_y = cy1 - 15
+        if text_y < 0: text_y = cy1 + 5
+        return cx1, text_y
+
+    def move_box_items(self, index):
+        """Reposition one box's canvas items during a drag (no delete/create)."""
+        if not self.model.current_image_pil: return
+        if not (0 <= index < len(self.model.boxes)): return
+
+        cx1, cy1, cx2, cy2 = self._box_canvas_coords(self.model.boxes[index])
+        self.canvas.coords(f"box_{index}", cx1, cy1, cx2, cy2)
+
+        if self.model.show_labels.get():
+            self.canvas.coords(f"label_{index}", *self._label_position(cx1, cy1))
+
+        half = 3  # handles are 6px squares
+        for hx, hy, name in ((cx1, cy1, "nw"), (cx2, cy1, "ne"),
+                             (cx1, cy2, "sw"), (cx2, cy2, "se")):
+            self.canvas.coords(f"handle_{index}_{name}",
+                               hx - half, hy - half, hx + half, hy + half)
+
+    def draw_box_on_canvas(self, box, is_selected, index, preview=False):
+        if not self.model.current_image_pil: return
+
+        cx1, cy1, cx2, cy2 = self._box_canvas_coords(box)
+
         class_info = next((c for c in self.model.classes if c['id'] == box['class_id']), None)
         
         if box['class_id'] == -1:
-            color = "#FFFFFF"
+            color = THEME['fg_highlight']
             label_text = "Unlabeled"
         else:
-            color = class_info['color'] if class_info else "#FFFFFF"
+            color = class_info['color'] if class_info else THEME['fg_highlight']
             label_text = class_info['name'] if class_info else "Unknown"
 
         if preview:
             width = 2
-            outline = "#4CC9F0"
-            label_color = "#4CC9F0"
+            outline = THEME['info']
+            label_color = THEME['info']
             dash = (6, 4)
             box_tag = "preview_box"
             label_tag = "preview_label"
             label_text = f"{label_text} (Preview)"
         else:
             width = 3 if is_selected else 2
-            outline = "#FFFFFF" if is_selected else color
+            outline = THEME['selected_box'] if is_selected else color
             label_color = color
             dash = None
             box_tag = "box"
@@ -512,10 +581,10 @@ class AnnotationView:
         
         # Draw Label
         if self.model.show_labels.get():
-            text_x = cx1
-            text_y = cy1 - 15
-            if text_y < 0: text_y = cy1 + 5
-            self.canvas.create_text(text_x, text_y, text=label_text, fill=label_color, anchor=tk.SW, font=(THEME['font_family_sans'], THEME['font_size_main']-1, "bold"), tags=label_tag)
+            text_x, text_y = self._label_position(cx1, cy1)
+            self.canvas.create_text(text_x, text_y, text=label_text, fill=label_color, anchor=tk.SW,
+                                    font=(THEME['font_family_sans'], THEME['font_size_main']-1, "bold"),
+                                    tags=(label_tag, f"{label_tag}_{index}"))
 
         # Draw handles if selected
         if is_selected and not preview:
@@ -525,106 +594,170 @@ class AnnotationView:
                 (cx1, cy2, "sw"), (cx2, cy2, "se")
             ]
             for hx, hy, name in handles:
-                self.canvas.create_rectangle(hx-h_size/2, hy-h_size/2, hx+h_size/2, hy+h_size/2, 
-                                             fill="white", outline="black", tags=("handle", f"handle_{index}_{name}"))
+                self.canvas.create_rectangle(hx-h_size/2, hy-h_size/2, hx+h_size/2, hy+h_size/2,
+                                             fill=THEME['selected_box'], outline=THEME['bg_main'],
+                                             tags=("handle", f"handle_{index}_{name}"))
 
     def update_box_list(self):
-        self.box_listbox.delete(0, tk.END)
-        for i, box in enumerate(self.model.boxes):
-            class_info = next((c for c in self.model.classes if c['id'] == box['class_id']), None)
-            name = class_info['name'] if class_info else "Unknown"
-            self.box_listbox.insert(tk.END, f"{i}: {name}")
-            if i in self.model.selected_indices:
-                self.box_listbox.selection_set(i)
+        tree = self.box_listbox.tree
+        self._suppress_list_events = True
+        try:
+            tree.delete(*tree.get_children())
+            class_by_id = {c['id']: c for c in self.model.classes}
+            for i, box in enumerate(self.model.boxes):
+                class_info = class_by_id.get(box['class_id'])
+                name = class_info['name'] if class_info else "Unknown"
+                tree.insert('', 'end', iid=str(i), text=f"{i}: {name}")
+            selected = [str(i) for i in self.model.selected_indices
+                        if 0 <= i < len(self.model.boxes)]
+            if selected:
+                tree.selection_set(selected)
+        finally:
+            self._suppress_list_events = False
+
+    # ---------- Class list (Treeview with color swatches + counts) ----------
+
+    def _class_item_text(self, cls, count):
+        suffix = f"   ({count})" if count else ""
+        return f" {cls['id']}: {cls['name']}{suffix}"
+
+    def rebuild_class_list(self, classes, counts=None):
+        tree = self.class_listbox.tree
+        self._suppress_list_events = True
+        try:
+            tree.delete(*tree.get_children())
+            self.class_swatches = {}
+            self._class_iids = []
+            self._class_sig = [(c['id'], c['name'], c['color']) for c in classes]
+            counts = counts or {}
+            for c in classes:
+                swatch = tk.PhotoImage(width=12, height=12)
+                swatch.put(c['color'], to=(0, 0, 12, 12))
+                self.class_swatches[c['id']] = swatch  # keep a ref or Tk drops the image
+                iid = str(c['id'])
+                self._class_iids.append(iid)
+                tree.insert('', 'end', iid=iid,
+                            text=self._class_item_text(c, counts.get(c['id'])),
+                            image=swatch)
+        finally:
+            self._suppress_list_events = False
+
+    def update_class_counts(self, classes, counts):
+        tree = self.class_listbox.tree
+        for c in classes:
+            iid = str(c['id'])
+            if tree.exists(iid):
+                tree.item(iid, text=self._class_item_text(c, counts.get(c['id'])))
+
+    def filter_class_list(self, visible_ids):
+        """Detach/reattach items so filtering never resets scroll or selection."""
+        tree = self.class_listbox.tree
+        index = 0
+        for iid in self._class_iids:
+            if int(iid) in visible_ids:
+                tree.reattach(iid, '', index)
+                index += 1
+            else:
+                tree.detach(iid)
+
+    def set_class_selection(self, class_id):
+        tree = self.class_listbox.tree
+        self._suppress_list_events = True
+        try:
+            if class_id is not None and tree.exists(str(class_id)):
+                tree.selection_set(str(class_id))
+                tree.see(str(class_id))
+            else:
+                for iid in tree.selection():
+                    tree.selection_remove(iid)
+        finally:
+            self._suppress_list_events = False
+
+    # ---------- File list (Treeview keyed by filename) ----------
+
+    def rebuild_file_list(self, filenames):
+        tree = self.file_listbox.tree
+        self._suppress_list_events = True
+        try:
+            tree.delete(*tree.get_children())
+            for f in filenames:
+                tree.insert('', 'end', iid=f, text=f)
+        finally:
+            self._suppress_list_events = False
+
+    def set_file_selection(self, filename):
+        tree = self.file_listbox.tree
+        self._suppress_list_events = True
+        try:
+            if tree.exists(filename):
+                tree.selection_set(filename)
+                tree.see(filename)
+        finally:
+            self._suppress_list_events = False
+
+    def setup_ttk_style(self):
+        """Style ttk widgets (combobox, notebook, treeview) from the theme."""
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use('clam')
+        except tk.TclError:
+            pass
+        style.configure('TCombobox', fieldbackground=THEME['entry_bg'],
+                        background=THEME['button_bg'], foreground=THEME['entry_fg'],
+                        arrowcolor=THEME['fg_text'], bordercolor=THEME['border'])
+        style.map('TCombobox',
+                  fieldbackground=[('readonly', THEME['entry_bg'])],
+                  foreground=[('readonly', THEME['entry_fg'])])
+        style.configure('TNotebook', background=THEME['bg_main'], borderwidth=0)
+        style.configure('TNotebook.Tab', background=THEME['button_bg'],
+                        foreground=THEME['button_fg'], padding=(12, 6))
+        style.map('TNotebook.Tab',
+                  background=[('selected', THEME['button_highlight'])],
+                  foreground=[('selected', THEME['fg_highlight'])])
+        style.configure('Dark.Treeview', background=THEME['list_bg'],
+                        fieldbackground=THEME['list_bg'], foreground=THEME['fg_text'],
+                        borderwidth=0, rowheight=24,
+                        font=(THEME['font_family_sans'], THEME['font_size_main']))
+        style.map('Dark.Treeview',
+                  background=[('selected', THEME['selection'])],
+                  foreground=[('selected', THEME['fg_highlight'])])
 
     def apply_theme(self, theme_dict):
         """Update the entire UI with a new theme."""
         update_ui_theme(theme_dict)
-        
-        # Update colors recursively for self.root and all children
+
+        self.setup_ttk_style()
+        self.root.configure(bg=THEME['bg_main'])
         self._apply_theme_to_widget(self.root)
-        
+
         # Special case for canvas background and redraw
         self.canvas.configure(bg=THEME['bg_main'])
         self.main_container.configure(bg=THEME['bg_main'])
-        
+
         # Redraw everything
         self.redraw_canvas()
 
     def _apply_theme_to_widget(self, widget):
-        """Recursively apply theme to widgets."""
-        from src.ui_components import DarkButton, DarkLabel, DarkListbox, DarkFrame, SectionLabel, SidebarFrame, DarkEntry, DarkProgressBar, ScrollableFrame
-        
+        """Recursively re-theme: parents first so children can read master bg."""
         try:
-            if isinstance(widget, DarkFrame):
-                # Inherit background from master if it's a sidebar color, else use main
-                bg = widget.master.cget('bg') if hasattr(widget.master, 'cget') else THEME['bg_main']
-                if bg == THEME['bg_sidebar']:
-                    widget.configure(bg=THEME['bg_sidebar'])
-                else:
-                    widget.configure(bg=THEME['bg_main'])
-                
-                # Special cases for inner frames of complex components
-                if 'TabbedFrame' in str(type(widget.master)) or 'CollapsibleFrame' in str(type(widget.master)):
-                     widget.configure(bg=THEME['bg_sidebar'])
-            elif isinstance(widget, SidebarFrame):
-                widget.configure(bg=THEME['bg_sidebar'])
-            elif isinstance(widget, ScrollableFrame):
-                widget.configure(bg=THEME['bg_sidebar'])
-                widget.canvas.configure(bg=THEME['bg_sidebar'])
-                widget.scrollable_content.configure(bg=THEME['bg_sidebar'])
-            elif isinstance(widget, TabbedFrame):
-                widget.configure(bg=THEME['bg_sidebar'])
-                widget.header.configure(bg=THEME['bg_sidebar'])
-                widget.content.configure(bg=THEME['bg_sidebar'])
-                for btn, frame in widget.tabs.values():
-                    # TabButton now handles its own theming
-                    btn.bg_color = THEME['button_bg']
-                    btn.fg_color = THEME['button_fg']
-                    btn.active_bg = THEME['button_highlight']
-                    btn.hover_color = THEME['button_hover']
-                    btn._draw()
-                    frame.configure(bg=THEME['bg_sidebar'])
-            elif isinstance(widget, CollapsibleFrame):
-                widget.configure(bg=THEME['bg_sidebar'])
-                widget.header.bg_color = THEME['bg_sidebar']
-                widget.header.fg_color = THEME['button_highlight']
-                widget.header._draw()
-                widget.content.configure(bg=THEME['bg_sidebar'])
-            elif isinstance(widget, SectionLabel):
-                widget.configure(bg=THEME['bg_sidebar'], fg=THEME['button_highlight'], font=(THEME['font_family_serif'], THEME['font_size_header'], 'bold'))
-            elif isinstance(widget, DarkLabel):
-                # Labels might be on sidebar or main
-                bg = widget.master.cget('bg') if hasattr(widget.master, 'cget') else THEME['bg_main']
-                widget.configure(bg=bg, fg=THEME['fg_text'], font=(THEME['font_family_sans'], THEME['font_size_main']))
-            elif isinstance(widget, DarkButton):
-                widget.bg_color = THEME['button_bg']
-                widget.fg_color = THEME['button_fg']
-                widget.hover_color = THEME['button_hover']
-                widget.active_color = THEME['button_highlight']
-                widget.font = (THEME['font_family_sans'], THEME['font_size_main'])
-                widget._current_bg = widget.bg_color
-                widget._draw()
-            elif isinstance(widget, DarkEntry):
-                widget.configure(bg=THEME['entry_bg'], fg=THEME['entry_fg'], font=(THEME['font_family_sans'], THEME['font_size_main']),
-                                 highlightbackground=THEME['border'], highlightcolor=THEME['accent'])
-            elif isinstance(widget, DarkListbox):
-                widget.configure(bg=THEME['list_bg'], fg=THEME['entry_fg'], 
-                                 selectbackground=THEME['selection'], selectforeground=THEME['fg_highlight'], font=(THEME['font_family_sans'], THEME['font_size_main']))
-            elif isinstance(widget, DarkProgressBar):
-                widget.bg_color = THEME['entry_bg']
-                widget.fg_color = THEME['button_highlight']
-                widget.text_color = THEME['fg_text']
-                widget._draw()
+            if hasattr(widget, 'apply_theme'):
+                widget.apply_theme()
             elif isinstance(widget, tk.Checkbutton):
-                bg = widget.master.cget('bg') if hasattr(widget.master, 'cget') else THEME['bg_sidebar']
-                widget.configure(bg=bg, fg=THEME['fg_text'], selectcolor=bg, activebackground=bg)
+                bg = widget.master.cget('bg')
+                widget.configure(bg=bg, fg=THEME['fg_text'], selectcolor=bg,
+                                 activebackground=bg, activeforeground=THEME['fg_highlight'])
             elif isinstance(widget, tk.PanedWindow):
                 widget.configure(bg=THEME['bg_main'])
-            elif isinstance(widget, tk.Scrollbar):
-                pass # Themed scrollbars are tricky without ttk styles
-        except Exception as e:
-            # print(f"Error updating widget {widget}: {e}")
+            elif isinstance(widget, tk.Listbox):
+                widget.configure(bg=THEME['list_bg'], fg=THEME['fg_text'],
+                                 selectbackground=THEME['selection'])
+            elif isinstance(widget, tk.Entry):
+                widget.configure(bg=THEME['entry_bg'], fg=THEME['entry_fg'],
+                                 insertbackground=THEME['fg_text'])
+            elif isinstance(widget, (tk.Frame, tk.Toplevel)):
+                # Raw frames inside custom containers follow their parent
+                widget.configure(bg=widget.master.cget('bg'))
+        except tk.TclError:
             pass
 
         for child in widget.winfo_children():

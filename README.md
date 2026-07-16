@@ -21,10 +21,11 @@ A powerful, feature-rich YOLO annotation tool with a professional MVC architectu
 
 ### ⚙️ Power Tools
 
-- **Batch Operations**: Replace all instances of one Class ID with another across your entire dataset in seconds.
+- **Batch Operations**: Replace all instances of one Class ID with another across your entire dataset in seconds — with automatic backups and a live progress dialog.
 - **Search & Filtering**: Search through class lists and filter your image set to show only images containing specific labels.
+- **Thumbnail Filmstrip**: A virtualized strip of image thumbnails under the canvas for fast visual navigation.
+- **Class Insights**: Class list shows a color swatch and per-class annotation counts across the dataset.
 - **Image Preloading**: Multi-threaded preloading for instant navigation between high-res frames.
-- **Template Mode**: Define standard box sizes for repeatable object types to stamp annotations instantly.
 - **Validation tool**: Check for potential annotation errors or empty files.
 
 ## Features
@@ -62,7 +63,7 @@ cd Annotation-Tool
 2. **Install dependencies**
 
 ```bash
-pip install pillow
+pip install -r requirements.txt
 ```
 
 3. **Run the application**
@@ -80,7 +81,7 @@ python main.py
 3. **Select Class**: Click a class from the left sidebar list.
 4. **Draw Boxes**:
    - Click and drag for custom sizes.
-   - OR click once to use your defined **Template**.
+   - OR click once to stamp a box using the class's default size.
 5. **Navigate**: Use keyboard shortcuts to flip through images; they will auto-save.
 
 ### Keyboard Shortcuts (Latest Defaults)
@@ -97,6 +98,8 @@ python main.py
 | Apply Preset Slot         | `Ctrl + [1-9]`         |
 | Save Preset Slot          | `Ctrl + Shift + [1-9]` |
 | Toggle Unannotated Filter | `U`                    |
+| Zoom In / Out             | `Ctrl + +` / `Ctrl + -` |
+| Fit to Window             | `Ctrl + 0`             |
 | Show Help Overlay         | `?`                    |
 | Edit Box Class            | `Ctrl+E`               |
 | Deselect Class (Idle)     | `Escape`               |

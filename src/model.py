@@ -1,13 +1,10 @@
 import os
 import tkinter as tk
-from src.utils import (load_classes, load_config, save_config, 
+from src.utils import (load_classes, load_config,
                        load_session, save_session, get_annotated_images,
                        parse_yolo, save_yolo, ImagePreloader, validate_annotations,
-                       get_recent_projects, add_recent_project)
-
-SESSION_FILE = "session.json"
-CONFIG_FILE = "config.json"
-CLASSES_FILE = "data/predefined_classes.txt"
+                       get_recent_projects, add_recent_project,
+                       SESSION_FILE, CONFIG_FILE, CLASSES_FILE)
 
 class AnnotationModel:
     def __init__(self):
@@ -30,6 +27,7 @@ class AnnotationModel:
         self.show_labels = tk.BooleanVar(value=self.session.get('show_labels', True))
         self.show_right_sidebar = tk.BooleanVar(value=self.session.get('show_right_sidebar', True))
         self.show_left_sidebar = tk.BooleanVar(value=self.session.get('show_left_sidebar', True))
+        self.show_filmstrip = tk.BooleanVar(value=self.session.get('show_filmstrip', True))
         self.unannotated_filter_active = tk.BooleanVar(value=False)
         self.current_theme_name = self.session.get('theme_name', 'Midnight Glass')
         
@@ -45,6 +43,7 @@ class AnnotationModel:
         
         # Filter State
         self.filtered_classes = [(i, c) for i, c in enumerate(self.classes)]
+        self.class_counts = {}
         
         # Interaction State
         self.is_drawing = False
@@ -60,7 +59,6 @@ class AnnotationModel:
         self.active_box_index = -1
         self.pan_start_x = 0
         self.pan_start_y = 0
-        self.template_mode = False
         
         # History for Undo/Redo
         self.history = []
@@ -124,6 +122,7 @@ class AnnotationModel:
             "auto_save": self.auto_save.get(),
             "show_right_sidebar": self.show_right_sidebar.get(),
             "show_left_sidebar": self.show_left_sidebar.get(),
+            "show_filmstrip": self.show_filmstrip.get(),
             "theme_name": self.current_theme_name,
             "box_presets_by_scope": self.session.get('box_presets_by_scope', {})
         }

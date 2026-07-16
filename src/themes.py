@@ -1,4 +1,36 @@
 # Predefined Color Palettes for the Annotation Tool
+import sys
+
+# Platform-aware default font: 'Segoe UI' only exists on Windows; picking a
+# real font keeps text metrics (button sizing) correct on macOS/Linux.
+if sys.platform == 'win32':
+    SANS_FONT = 'Segoe UI'
+elif sys.platform == 'darwin':
+    SANS_FONT = 'Helvetica Neue'
+else:
+    SANS_FONT = 'DejaVu Sans'
+
+# Semantic status colors shared by the dark themes; light themes override
+# them with darker, legible variants.
+_DARK_STATUS = {
+    'crosshair': '#FFFFFF',
+    'selected_box': '#FFFFFF',
+    'success': '#00FF00',
+    'warning': '#FFD700',
+    'error': '#FF4444',
+    'info': '#4CC9F0',
+    'danger': '#882222',
+}
+
+_LIGHT_STATUS = {
+    'crosshair': '#1e293b',
+    'selected_box': '#0f172a',
+    'success': '#15803d',
+    'warning': '#b45309',
+    'error': '#dc2626',
+    'info': '#0369a1',
+    'danger': '#b91c1c',
+}
 
 PREDEFINED_THEMES = {
     "Anthropic": {
@@ -16,10 +48,11 @@ PREDEFINED_THEMES = {
         'entry_fg': '#141413',
         'list_bg': '#f0eee6',
         'button_highlight': '#d97757',
-        'font_family_sans': 'Segoe UI',
+        'font_family_sans': SANS_FONT,
         'font_family_serif': 'Georgia',
         'font_size_main': 10,
-        'font_size_header': 12
+        'font_size_header': 12,
+        **_LIGHT_STATUS,
     },
     "Midnight Glass": {
         'bg_main': '#0f0c29',
@@ -36,10 +69,11 @@ PREDEFINED_THEMES = {
         'entry_fg': '#ffffff',
         'list_bg': '#16213e',
         'button_highlight': '#4cc9f0',
-        'font_family_sans': 'Segoe UI',
-        'font_family_serif': 'Segoe UI',
+        'font_family_sans': SANS_FONT,
+        'font_family_serif': SANS_FONT,
         'font_size_main': 10,
-        'font_size_header': 11
+        'font_size_header': 11,
+        **_DARK_STATUS,
     },
     "Emerald": {
         'bg_main': '#061715',
@@ -56,10 +90,11 @@ PREDEFINED_THEMES = {
         'entry_fg': '#ffffff',
         'list_bg': '#064e3b',
         'button_highlight': '#34d399',
-        'font_family_sans': 'Segoe UI',
-        'font_family_serif': 'Segoe UI',
+        'font_family_sans': SANS_FONT,
+        'font_family_serif': SANS_FONT,
         'font_size_main': 10,
-        'font_size_header': 11
+        'font_size_header': 11,
+        **_DARK_STATUS,
     },
     "Ruby": {
         'bg_main': '#1a0606',
@@ -76,10 +111,11 @@ PREDEFINED_THEMES = {
         'entry_fg': '#ffffff',
         'list_bg': '#450a0a',
         'button_highlight': '#f87171',
-        'font_family_sans': 'Segoe UI',
-        'font_family_serif': 'Segoe UI',
+        'font_family_sans': SANS_FONT,
+        'font_family_serif': SANS_FONT,
         'font_size_main': 10,
-        'font_size_header': 11
+        'font_size_header': 11,
+        **_DARK_STATUS,
     },
     "Amber": {
         'bg_main': '#1a1206',
@@ -96,10 +132,11 @@ PREDEFINED_THEMES = {
         'entry_fg': '#ffffff',
         'list_bg': '#451a03',
         'button_highlight': '#fbbf24',
-        'font_family_sans': 'Segoe UI',
-        'font_family_serif': 'Segoe UI',
+        'font_family_sans': SANS_FONT,
+        'font_family_serif': SANS_FONT,
         'font_size_main': 10,
-        'font_size_header': 11
+        'font_size_header': 11,
+        **_DARK_STATUS,
     },
     "Frost": {
         'bg_main': '#f8fafc',
@@ -116,10 +153,11 @@ PREDEFINED_THEMES = {
         'entry_fg': '#1e293b',
         'list_bg': '#ffffff',
         'button_highlight': '#2563eb',
-        'font_family_sans': 'Segoe UI',
-        'font_family_serif': 'Segoe UI',
+        'font_family_sans': SANS_FONT,
+        'font_family_serif': SANS_FONT,
         'font_size_main': 10,
-        'font_size_header': 11
+        'font_size_header': 11,
+        **_LIGHT_STATUS,
     }
 }
 

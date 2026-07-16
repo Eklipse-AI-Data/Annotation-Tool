@@ -57,8 +57,14 @@ class ScrollableFrame(tk.Frame):
         """Check if this frame is visible/mapped."""
         try:
             return self.winfo_ismapped()
-        except:
+        except tk.TclError:
             return False
+
+    def apply_theme(self):
+        self.bg = THEME['bg_sidebar']
+        self.configure(bg=self.bg)
+        self.canvas.configure(bg=self.bg)
+        self.scrollable_content.configure(bg=self.bg)
 
 class TabbedFrame(tk.Frame):
     """A frame with tabs for switching between different content areas."""
@@ -114,6 +120,15 @@ class TabbedFrame(tk.Frame):
         self.active_tab = name
         self.tabs[name][1].pack(fill=tk.BOTH, expand=True)
         self.tabs[name][0].set_active(True)
+
+    def apply_theme(self):
+        self.bg = THEME['bg_sidebar']
+        self.configure(bg=self.bg)
+        self.header.configure(bg=self.bg)
+        self.content.configure(bg=self.bg)
+        for btn, frame in self.tabs.values():
+            btn.apply_theme()
+            frame.configure(bg=self.bg)
 
 
 class TabButton(tk.Canvas):
@@ -220,7 +235,17 @@ class TabButton(tk.Canvas):
     def set_active(self, active):
         self._active = active
         self._draw()
-    
+
+    def apply_theme(self):
+        self.font = (THEME['font_family_sans'], THEME['font_size_main']-1, 'bold')
+        self.bg_color = THEME['button_bg']
+        self.fg_color = THEME['button_fg']
+        self.active_bg = THEME['button_highlight']
+        self.active_fg = THEME['fg_highlight']
+        self.hover_color = THEME['button_hover']
+        tk.Canvas.configure(self, bg=self.master.cget('bg'))
+        self._draw()
+
     def configure(self, **kwargs):
         if 'bg' in kwargs:
             self.bg_color = kwargs.pop('bg')
@@ -230,7 +255,7 @@ class TabButton(tk.Canvas):
             self.active_bg = kwargs.pop('activebackground')
         super().configure(**kwargs)
         self._draw()
-    
+
     config = configure
 
 class CollapsibleHeader(tk.Canvas):
@@ -273,7 +298,14 @@ class CollapsibleHeader(tk.Canvas):
     def set_expanded(self, expanded):
         self.expanded = expanded
         self._draw()
-    
+
+    def apply_theme(self):
+        self.font = (THEME['font_family_serif'], THEME['font_size_header'], 'bold')
+        self.bg_color = THEME['bg_sidebar']
+        self.fg_color = THEME['button_highlight']
+        tk.Canvas.configure(self, bg=self.master.cget('bg'))
+        self._draw()
+
     def configure(self, **kwargs):
         if 'text' in kwargs:
             # Parse out the arrow if present
@@ -330,22 +362,42 @@ class CollapsibleFrame(tk.Frame):
             self.header.set_expanded(True)
         self.is_expanded = not self.is_expanded
 
+    def apply_theme(self):
+        self.bg = THEME['bg_sidebar']
+        self.configure(bg=self.bg)
+        self.header.apply_theme()
+        self.content.configure(bg=self.bg)
+
 class DarkFrame(tk.Frame):
     def __init__(self, master, **kwargs):
         kwargs.setdefault('bg', THEME['bg_main'])
+        # Remember which theme surface this frame belongs to so theme
+        # switches can retint it without guessing from the widget tree.
+        self._theme_bg_key = 'bg_sidebar' if kwargs['bg'] == THEME['bg_sidebar'] else 'bg_main'
         super().__init__(master, **kwargs)
+
+    def apply_theme(self):
+        self.configure(bg=THEME[self._theme_bg_key])
 
 class SidebarFrame(tk.Frame):
     def __init__(self, master, **kwargs):
         kwargs.setdefault('bg', THEME['bg_sidebar'])
         super().__init__(master, **kwargs)
 
+    def apply_theme(self):
+        self.configure(bg=THEME['bg_sidebar'])
+
 class DarkLabel(tk.Label):
     def __init__(self, master, **kwargs):
         kwargs.setdefault('bg', THEME['bg_main'])
         kwargs.setdefault('fg', THEME['fg_text'])
         kwargs.setdefault('font', (THEME['font_family_sans'], THEME['font_size_main']))
+        self._theme_bg_key = 'bg_sidebar' if kwargs['bg'] == THEME['bg_sidebar'] else 'bg_main'
         super().__init__(master, **kwargs)
+
+    def apply_theme(self):
+        self.configure(bg=THEME[self._theme_bg_key], fg=THEME['fg_text'],
+                       font=(THEME['font_family_sans'], THEME['font_size_main']))
 
 class SectionLabel(tk.Label):
     def __init__(self, master, **kwargs):
@@ -354,6 +406,10 @@ class SectionLabel(tk.Label):
         kwargs.setdefault('font', (THEME['font_family_serif'], THEME['font_size_header'], 'bold'))
         kwargs.setdefault('pady', 5)
         super().__init__(master, **kwargs)
+
+    def apply_theme(self):
+        self.configure(bg=THEME['bg_sidebar'], fg=THEME['button_highlight'],
+                       font=(THEME['font_family_serif'], THEME['font_size_header'], 'bold'))
 
 class DarkButton(tk.Canvas):
     """Modern rounded button with smooth hover effects."""
@@ -518,7 +574,17 @@ class DarkButton(tk.Canvas):
     
     def _on_configure(self, event):
         self._draw()
-    
+
+    def apply_theme(self):
+        self.bg_color = THEME['button_bg']
+        self.fg_color = THEME['button_fg']
+        self.hover_color = THEME['button_hover']
+        self.active_color = THEME['button_highlight']
+        self.font = (THEME['font_family_sans'], THEME['font_size_main'])
+        self._current_bg = self.bg_color
+        tk.Canvas.configure(self, bg=self.master.cget('bg'))
+        self._draw()
+
     def configure(self, **kwargs):
         """Handle configuration changes."""
         if 'text' in kwargs:
@@ -605,9 +671,15 @@ class DarkEntry(tk.Frame):
         if 'insertbackground' in kwargs:
             self._entry.configure(insertbackground=kwargs.pop('insertbackground'))
         super().configure(**kwargs)
-    
+
     config = configure
-    
+
+    def apply_theme(self):
+        self.configure(bg=THEME['entry_bg'], fg=THEME['entry_fg'],
+                       font=(THEME['font_family_sans'], THEME['font_size_main']),
+                       insertbackground=THEME['fg_text'],
+                       highlightbackground=THEME['border'], highlightcolor=THEME['accent'])
+
     def bind(self, sequence=None, func=None, add=None):
         """Bind to the inner entry widget."""
         return self._entry.bind(sequence, func, add)
@@ -684,13 +756,204 @@ class DarkListbox(tk.Frame):
         super().configure(**kwargs)
     
     config = configure
-    
+
+    def apply_theme(self):
+        self.configure(bg=THEME['list_bg'], fg=THEME['entry_fg'],
+                       selectbackground=THEME['selection'], selectforeground=THEME['fg_highlight'],
+                       font=(THEME['font_family_sans'], THEME['font_size_main']),
+                       highlightbackground=THEME['border'], highlightcolor=THEME['accent'])
+
     def size(self):
         return self._listbox.size()
 
 class DarkScrollbar(ttk.Scrollbar):
     def __init__(self, master, **kwargs):
         super().__init__(master, **kwargs)
+
+class DarkTreeview(tk.Frame):
+    """Themed ttk.Treeview wrapped in a bordered frame (list replacement)."""
+    def __init__(self, master, selectmode='browse', height=10, **kwargs):
+        super().__init__(master, bg=THEME['list_bg'], **kwargs)
+        self.configure(highlightthickness=2, highlightbackground=THEME['border'],
+                       highlightcolor=THEME['accent'])
+        self.tree = ttk.Treeview(self, show='tree', style='Dark.Treeview',
+                                 selectmode=selectmode, height=height)
+        self.tree.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+    def bind(self, sequence=None, func=None, add=None):
+        return self.tree.bind(sequence, func, add)
+
+    def yview(self, *args):
+        return self.tree.yview(*args)
+
+    def configure(self, **kwargs):
+        if 'yscrollcommand' in kwargs:
+            self.tree.configure(yscrollcommand=kwargs.pop('yscrollcommand'))
+        super().configure(**kwargs)
+
+    config = configure
+
+    def apply_theme(self):
+        tk.Frame.configure(self, bg=THEME['list_bg'],
+                           highlightbackground=THEME['border'],
+                           highlightcolor=THEME['accent'])
+
+from collections import OrderedDict
+
+class ThumbnailStrip(tk.Frame):
+    """Virtualized horizontal filmstrip: only visible slots are drawn."""
+    THUMB_W = 96
+    THUMB_H = 54
+    PAD = 6
+    PHOTO_CACHE = 400  # PhotoImage LRU cap; evicted thumbs re-request cheaply
+
+    def __init__(self, master, on_click=None, **kwargs):
+        super().__init__(master, bg=THEME['bg_sidebar'], **kwargs)
+        self.on_click = on_click            # callback(filename)
+        self.request_thumbs = None          # callback(list_of_filenames)
+        self.filenames = []
+        self.current = None
+        self.photos = OrderedDict()         # filename -> PhotoImage (LRU)
+        self.slot_w = self.THUMB_W + self.PAD
+
+        self.canvas = tk.Canvas(self, height=self.THUMB_H + 10, bg=THEME['bg_sidebar'],
+                                highlightthickness=0, xscrollincrement=self.slot_w // 2)
+        self.scrollbar = tk.Scrollbar(self, orient=tk.HORIZONTAL, command=self.canvas.xview)
+        self.canvas.configure(xscrollcommand=self._on_scroll_set)
+        self.canvas.pack(fill=tk.X, side=tk.TOP)
+        self.scrollbar.pack(fill=tk.X, side=tk.BOTTOM)
+
+        self.canvas.bind('<Configure>', lambda e: self._render())
+        self.canvas.bind('<Button-1>', self._on_click_event)
+        self.canvas.bind('<MouseWheel>', self._on_wheel)
+
+    def set_items(self, filenames):
+        self.filenames = list(filenames)
+        width = max(1, len(self.filenames) * self.slot_w)
+        self.canvas.configure(scrollregion=(0, 0, width, self.THUMB_H + 10))
+        self.canvas.xview_moveto(0)
+        self._render()
+
+    def set_current(self, filename):
+        self.current = filename
+        if filename in self.photos:
+            self.photos.move_to_end(filename)
+        try:
+            idx = self.filenames.index(filename)
+        except ValueError:
+            self._render()
+            return
+        first, last = self._visible_range()
+        if idx <= first or idx >= last:
+            total_w = max(1, len(self.filenames) * self.slot_w)
+            target = max(0, idx * self.slot_w - self.canvas.winfo_width() // 2)
+            self.canvas.xview_moveto(target / total_w)
+        self._render()
+
+    def set_thumbnail(self, filename, photo):
+        self.photos[filename] = photo
+        self.photos.move_to_end(filename)
+        while len(self.photos) > self.PHOTO_CACHE:
+            self.photos.popitem(last=False)
+        first, last = self._visible_range()
+        if filename in self.filenames[first:last + 1]:
+            self._render()
+
+    def clear_thumbnails(self):
+        self.photos.clear()
+        self._render()
+
+    def _visible_range(self):
+        if not self.filenames:
+            return 0, -1
+        x0 = self.canvas.canvasx(0)
+        w = max(1, self.canvas.winfo_width())
+        first = max(0, int(x0 // self.slot_w))
+        last = min(len(self.filenames) - 1, int((x0 + w) // self.slot_w) + 1)
+        return first, last
+
+    def _render(self):
+        self.canvas.delete('thumb')
+        first, last = self._visible_range()
+        if last < first:
+            return
+        needed = []
+        y = 5
+        for i in range(first, last + 1):
+            fname = self.filenames[i]
+            x = i * self.slot_w + self.PAD // 2
+            photo = self.photos.get(fname)
+            if photo is not None:
+                self.canvas.create_image(x + self.THUMB_W // 2, y + self.THUMB_H // 2,
+                                         image=photo, tags='thumb')
+            else:
+                self.canvas.create_rectangle(x, y, x + self.THUMB_W, y + self.THUMB_H,
+                                             fill=THEME['entry_bg'], outline=THEME['border'],
+                                             tags='thumb')
+                needed.append(fname)
+            if fname == self.current:
+                self.canvas.create_rectangle(x - 2, y - 2, x + self.THUMB_W + 2, y + self.THUMB_H + 2,
+                                             outline=THEME['selection'], width=3, tags='thumb')
+        if needed and self.request_thumbs:
+            self.request_thumbs(needed)
+
+    def _on_scroll_set(self, lo, hi):
+        self.scrollbar.set(lo, hi)
+        self._render()
+
+    def _on_click_event(self, event):
+        if not self.filenames:
+            return
+        idx = int(self.canvas.canvasx(event.x) // self.slot_w)
+        if 0 <= idx < len(self.filenames) and self.on_click:
+            self.on_click(self.filenames[idx])
+
+    def _on_wheel(self, event):
+        self.canvas.xview_scroll(-1 if event.delta > 0 else 1, 'units')
+
+    def apply_theme(self):
+        tk.Frame.configure(self, bg=THEME['bg_sidebar'])
+        self.canvas.configure(bg=THEME['bg_sidebar'])
+        self._render()
+
+class Tooltip:
+    """Delayed hover tooltip for any widget."""
+    def __init__(self, widget, text, delay=600):
+        self.widget = widget
+        self.text = text
+        self.delay = delay
+        self._after_id = None
+        self._tip = None
+        widget.bind('<Enter>', self._schedule, add='+')
+        widget.bind('<Leave>', self._hide, add='+')
+        widget.bind('<ButtonPress>', self._hide, add='+')
+
+    def _schedule(self, event=None):
+        self._cancel()
+        self._after_id = self.widget.after(self.delay, self._show)
+
+    def _cancel(self):
+        if self._after_id:
+            self.widget.after_cancel(self._after_id)
+            self._after_id = None
+
+    def _show(self):
+        if self._tip:
+            return
+        x = self.widget.winfo_rootx() + 10
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+        self._tip = tk.Toplevel(self.widget)
+        self._tip.wm_overrideredirect(True)
+        self._tip.wm_geometry(f"+{x}+{y}")
+        tk.Label(self._tip, text=self.text, bg=THEME['bg_sidebar'], fg=THEME['fg_text'],
+                 relief=tk.SOLID, borderwidth=1, padx=6, pady=3,
+                 font=(THEME['font_family_sans'], THEME['font_size_main']-1)).pack()
+
+    def _hide(self, event=None):
+        self._cancel()
+        if self._tip:
+            self._tip.destroy()
+            self._tip = None
 
 class DarkProgressBar(tk.Canvas):
     """Modern progress bar with rounded corners."""
@@ -771,4 +1034,45 @@ class DarkProgressBar(tk.Canvas):
     def _on_resize(self, event):
         """Handle resize events."""
         self._draw()
+
+    def apply_theme(self):
+        self.bg_color = THEME['entry_bg']
+        self.fg_color = THEME['button_highlight']
+        self.text_color = THEME['fg_text']
+        tk.Canvas.configure(self, bg=self.master.cget('bg'))
+        self._draw()
+
+
+class ProgressDialog(tk.Toplevel):
+    """Modal progress dialog for long-running background tasks."""
+    def __init__(self, master, title="Working..."):
+        super().__init__(master)
+        self.title(title)
+        self.geometry("420x120")
+        self.configure(bg=THEME['bg_main'])
+        self.resizable(False, False)
+        self.transient(master)
+        self.grab_set()
+        # The task cannot be interrupted safely, so ignore close attempts
+        self.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        self.label = DarkLabel(self, text="Starting...", bg=THEME['bg_main'])
+        self.label.pack(pady=(20, 8), padx=16, fill=tk.X)
+
+        self.bar = DarkProgressBar(self, height=22)
+        self.bar.pack(fill=tk.X, padx=16, pady=(0, 16))
+
+    def update_progress(self, current, total, text=""):
+        if total:
+            percent = int(current / total * 100)
+            self.bar.set_value(current, total, f"{percent}%")
+        if text:
+            self.label.config(text=text)
+
+    def close(self):
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        self.destroy()
 

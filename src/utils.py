@@ -2,10 +2,24 @@ import re
 import os
 import json
 import random
+import shutil
 import colorsys
 import threading
+import concurrent.futures
 from collections import OrderedDict
 from PIL import Image
+
+# Anchor all app files to the project root so the tool works regardless of
+# the current working directory it is launched from.
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+def project_path(*parts):
+    return os.path.join(PROJECT_ROOT, *parts)
+
+SESSION_FILE = project_path("session.json")
+CONFIG_FILE = project_path("config.json")
+DATA_DIR = project_path("data")
+CLASSES_FILE = os.path.join(DATA_DIR, "predefined_classes.txt")
 
 def load_classes(file_path):
     """
@@ -45,7 +59,9 @@ def load_config(path):
         "duplicate": "<Control-d>",
         "edit_class": "<Control-e>",
         "undo": "<Control-z>",
-        "redo": "<Control-y>"
+        "redo": "<Control-y>",
+        "crosshair_color": "#FFFFFF",
+        "crosshair_dash": [2, 2]
     }
     if not os.path.exists(path):
         return default_config
@@ -81,6 +97,7 @@ def get_default_session():
         "auto_save": True,
         "show_right_sidebar": True,
         "show_left_sidebar": True,
+        "show_filmstrip": True,
         "theme_name": "Midnight Glass",
         "recent_projects": [],
         "box_presets_by_scope": {}
@@ -140,7 +157,7 @@ def get_annotated_images(image_dir, output_dir, image_list):
             try:
                 if os.path.getsize(txt_path) > 0:
                     annotated.add(img_file)
-            except:
+            except OSError:
                 pass
     
     return annotated
@@ -225,46 +242,36 @@ def update_annotation_file(file_path, class_mapping, remove_unmapped=False):
         print(f"Error updating annotation file {file_path}: {e}")
         return False
 
-def backup_annotations(image_dir):
+def backup_annotations(image_dir, progress_callback=None):
     """
-    Creates a backup of all annotation files in the image directory.
-    
+    Creates a timestamped backup of all annotation files in the directory.
+
     Args:
-        image_dir (str): Path to the directory containing images and annotations.
-    
+        image_dir (str): Path to the directory containing annotation .txt files.
+        progress_callback: Optional callable(current, total, filename).
+
     Returns:
-        str: Path to the backup directory, or None if failed.
+        str: Path to the backup directory, or None if failed or nothing to back up.
     """
     from datetime import datetime
-    
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_dir = os.path.join(image_dir, f"annotations_backup_{timestamp}")
-    
+
     try:
-        os.makedirs(backup_dir, exist_ok=True)
-        
-        backup_count = 0
-        for filename in os.listdir(image_dir):
-            if filename.lower().endswith('.txt'):
-                src = os.path.join(image_dir, filename)
-                dst = os.path.join(backup_dir, filename)
-                
-                # Copy the file
-                with open(src, 'r') as f_src:
-                    content = f_src.read()
-                with open(dst, 'w') as f_dst:
-                    f_dst.write(content)
-                
-                backup_count += 1
-        
-        if backup_count > 0:
-            print(f"Backed up {backup_count} annotation files to {backup_dir}")
-            return backup_dir
-        else:
-            print("No annotation files found to backup")
+        txt_files = [f for f in os.listdir(image_dir) if f.lower().endswith('.txt')]
+        if not txt_files:
             return None
-            
-    except Exception as e:
+
+        os.makedirs(backup_dir, exist_ok=True)
+        for i, filename in enumerate(txt_files):
+            shutil.copy2(os.path.join(image_dir, filename), os.path.join(backup_dir, filename))
+            if progress_callback:
+                progress_callback(i + 1, len(txt_files), filename)
+
+        return backup_dir
+
+    except OSError as e:
         print(f"Error creating backup: {e}")
         return None
 
@@ -371,71 +378,65 @@ def normalize_box(x1, y1, x2, y2, img_width, img_height):
         'h': h / img_height
     }
 
-def resize_images_to_lowres(input_folder, target_width=720):
+def resize_images_to_lowres(input_folder, target_width=720, progress_callback=None):
     """
-    Resizes images in a folder to lower resolution and saves them to a new directory.
-    
+    Resizes images in a folder to lower resolution (aspect ratio preserved)
+    and saves them to a sibling '<folder>_lowres' directory.
+
     Args:
         input_folder (str): Path to the folder containing the original images.
-        target_width (int): Target width for the intermediate resize (default: 720).
-    
+        target_width (int): Target width in pixels (default: 720).
+        progress_callback: Optional callable(current, total, filename).
+
     Returns:
         str: Path to the lowres directory, or None if operation failed.
     """
-    # Create output folder path
     output_folder = input_folder.rstrip(os.sep) + "_lowres"
-    
-    # Create output directory if it doesn't exist
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
-    
-    processed_count = 0
-    error_count = 0
-    
+
     try:
-        for filename in os.listdir(input_folder):
-            if filename.lower().endswith((".png", ".jpg", ".jpeg")):
-                try:
-                    # Open the image
-                    img_path = os.path.join(input_folder, filename)
-                    img = Image.open(img_path)
-                    
-                    # Resize to target width (maintaining aspect ratio)
-                    target_height = int(target_width * img.height / img.width)
-                    img_resized = img.resize((target_width, target_height), Image.LANCZOS)
-                    
-                    # Resize back to 1920x1080
-                    img_final = img_resized.resize((1920, 1080), Image.LANCZOS)
-                    
-                    # Save the image
-                    output_path = os.path.join(output_folder, filename)
-                    # Save as JPEG for consistency
-                    if filename.lower().endswith(".png"):
-                        # Convert RGBA to RGB if necessary
-                        if img_final.mode == 'RGBA':
-                            img_final = img_final.convert('RGB')
-                        img_final.save(output_path, "JPEG")
-                    else:
-                        img_final.save(output_path, "JPEG")
-                    
-                    processed_count += 1
-                    
-                except Exception as e:
-                    print(f"Error processing {filename}: {e}")
-                    error_count += 1
-        
-        if processed_count > 0:
-            print(f"Successfully processed {processed_count} images to {output_folder}")
-            if error_count > 0:
-                print(f"Failed to process {error_count} images")
-            return output_folder
-        else:
-            print("No images were processed")
-            return None
-            
-    except Exception as e:
+        os.makedirs(output_folder, exist_ok=True)
+        filenames = sorted(f for f in os.listdir(input_folder)
+                           if f.lower().endswith((".png", ".jpg", ".jpeg")))
+    except OSError as e:
         print(f"Error accessing folder: {e}")
         return None
+
+    processed_count = 0
+    error_count = 0
+    total = len(filenames)
+
+    for i, filename in enumerate(filenames):
+        try:
+            img_path = os.path.join(input_folder, filename)
+            img = Image.open(img_path)
+
+            # Resize to target width, preserving aspect ratio
+            target_height = max(1, round(target_width * img.height / img.width))
+            img_final = img.resize((target_width, target_height), Image.LANCZOS)
+
+            # Preserve the original format so the file extension stays truthful
+            output_path = os.path.join(output_folder, filename)
+            if filename.lower().endswith(".png"):
+                img_final.save(output_path, "PNG")
+            else:
+                if img_final.mode == 'RGBA':
+                    img_final = img_final.convert('RGB')
+                img_final.save(output_path, "JPEG")
+
+            processed_count += 1
+
+        except Exception as e:
+            print(f"Error processing {filename}: {e}")
+            error_count += 1
+
+        if progress_callback:
+            progress_callback(i + 1, total, filename)
+
+    if processed_count > 0:
+        if error_count > 0:
+            print(f"Failed to process {error_count} images")
+        return output_folder
+    return None
 
 
 # ==================== IMAGE PRELOADER ====================
@@ -450,6 +451,8 @@ class ImagePreloader:
         self.cache_size = cache_size
         self.lock = threading.Lock()
         self._loading = set()  # Track images currently being loaded
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="preload")
     
     def get(self, image_path):
         """Get an image from cache, or None if not cached."""
@@ -472,12 +475,15 @@ class ImagePreloader:
                     self.cache.popitem(last=False)
     
     def preload(self, image_paths):
-        """Preload multiple images in background threads."""
-        for path in image_paths:
-            if path not in self.cache and path not in self._loading:
-                self._loading.add(path)
-                thread = threading.Thread(target=self._load_image, args=(path,), daemon=True)
-                thread.start()
+        """Preload multiple images on the background executor."""
+        to_load = []
+        with self.lock:
+            for path in image_paths:
+                if path not in self.cache and path not in self._loading:
+                    self._loading.add(path)
+                    to_load.append(path)
+        for path in to_load:
+            self._executor.submit(self._load_image, path)
     
     def _load_image(self, image_path):
         """Load a single image (runs in background thread)."""
@@ -496,6 +502,66 @@ class ImagePreloader:
         """Clear the cache."""
         with self.lock:
             self.cache.clear()
+
+    def shutdown(self):
+        """Stop accepting preload work (called on app close)."""
+        self._executor.shutdown(wait=False)
+
+
+class ThumbnailLoader:
+    """
+    Background thumbnail generator with an LRU cache of PIL thumbnails.
+    PhotoImage construction must happen on the UI thread — this class only
+    produces PIL images and invokes the callback from a worker thread.
+    """
+    def __init__(self, size=(96, 54), cache_size=300):
+        self.size = size
+        self.cache = OrderedDict()  # key -> PIL.Image
+        self.cache_size = cache_size
+        self.lock = threading.Lock()
+        self._loading = set()
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="thumb")
+
+    def request(self, path, key, callback):
+        """Request a thumbnail; callback(key, pil_image) may run on a worker thread."""
+        with self.lock:
+            if key in self.cache:
+                self.cache.move_to_end(key)
+                cached = self.cache[key]
+            elif key in self._loading:
+                return
+            else:
+                self._loading.add(key)
+                cached = None
+        if cached is not None:
+            callback(key, cached)
+            return
+        self._executor.submit(self._load, path, key, callback)
+
+    def _load(self, path, key, callback):
+        try:
+            if os.path.exists(path):
+                img = Image.open(path)
+                img.thumbnail(self.size)
+                img = img.convert('RGB')
+                with self.lock:
+                    self.cache[key] = img
+                    while len(self.cache) > self.cache_size:
+                        self.cache.popitem(last=False)
+                callback(key, img)
+        except Exception as e:
+            print(f"Thumbnail error for {path}: {e}")
+        finally:
+            with self.lock:
+                self._loading.discard(key)
+
+    def clear(self):
+        with self.lock:
+            self.cache.clear()
+
+    def shutdown(self):
+        self._executor.shutdown(wait=False)
 
 
 # ==================== ANNOTATION VALIDATION ====================
@@ -630,13 +696,13 @@ def calculate_iou(box1, box2):
 
 # ==================== RECENT PROJECTS ====================
 
-def get_recent_projects(session_path="session.json", max_projects=10):
+def get_recent_projects(session_path=SESSION_FILE, max_projects=10):
     """Get list of recent projects from session file."""
     session = load_session(session_path)
     return session.get('recent_projects', [])
 
 
-def add_recent_project(name, image_dir, output_dir, session_path="session.json", max_projects=10):
+def add_recent_project(name, image_dir, output_dir, session_path=SESSION_FILE, max_projects=10):
     """Add or update a project in the recent projects list."""
     session = load_session(session_path)
     recent = session.get('recent_projects', [])
