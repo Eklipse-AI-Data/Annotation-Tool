@@ -347,6 +347,7 @@ class AnnotationView:
                 ("Click + Drag", "Draw Box"),
                 ("Click", "Stamp Template Box"),
                 ("Q / Delete", "Delete Selected"),
+                ("Ctrl+A", "Select All Boxes"),
                 ("Ctrl+C", "Copy Boxes"),
                 ("Space / Ctrl+V", "Paste Boxes"),
                 ("Ctrl+D", "Duplicate Boxes"),

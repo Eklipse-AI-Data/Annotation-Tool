@@ -303,6 +303,8 @@ class AnnotationController:
         self.view.class_listbox.bind('<<TreeviewSelect>>', self.on_class_select)
         self.view.file_listbox.bind('<<TreeviewSelect>>', self.on_file_select)
         self.view.box_listbox.bind('<<TreeviewSelect>>', self.on_box_list_select)
+        self.view.box_listbox.bind('<Button-1>', self.on_box_list_press, add='+')
+        self.view.box_listbox.bind('<B1-Motion>', self.on_box_list_drag, add='+')
         
         # Canvas Binds
         self.view.canvas.bind('<Configure>', self.on_canvas_configure)
@@ -366,6 +368,11 @@ class AnnotationController:
         
         # U key for unannotated filter toggle
         root.bind("<u>", shortcut(self.toggle_unannotated_filter_key))
+
+        # Select all boxes
+        root.bind("<Control-a>", shortcut(self.select_all_boxes))
+        if sys.platform == 'darwin':
+            root.bind("<Command-a>", shortcut(self.select_all_boxes))
 
         # Zoom keys + fit-to-window
         zoom_binds = [("<Control-plus>", self.zoom_in), ("<Control-equal>", self.zoom_in),
@@ -786,6 +793,38 @@ class AnnotationController:
                 return
             if index != self.model.current_image_index:
                 self.load_image(index)
+
+    def select_all_boxes(self):
+        if not self.model.boxes:
+            return
+        self.model.selected_indices = set(range(len(self.model.boxes)))
+        self.view.update_box_list()
+        self.view.redraw_canvas()
+        return "break"
+
+    def on_box_list_press(self, event):
+        self._box_list_drag_anchor = self.view.box_listbox.tree.identify_row(event.y)
+
+    def on_box_list_drag(self, event):
+        tree = self.view.box_listbox.tree
+        anchor = getattr(self, '_box_list_drag_anchor', '')
+        if not anchor:
+            return
+        # Autoscroll when dragging past the list edges
+        if event.y < 0:
+            tree.yview_scroll(-1, 'units')
+        elif event.y > tree.winfo_height():
+            tree.yview_scroll(1, 'units')
+        row = tree.identify_row(min(max(event.y, 0), tree.winfo_height() - 1))
+        if not row:
+            return
+        children = tree.get_children()
+        try:
+            i1, i2 = children.index(anchor), children.index(row)
+        except ValueError:
+            return
+        lo, hi = min(i1, i2), max(i1, i2)
+        tree.selection_set(children[lo:hi + 1])
 
     def on_box_list_select(self, event):
         if self.view._suppress_list_events:
