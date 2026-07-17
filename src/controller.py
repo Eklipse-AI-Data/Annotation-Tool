@@ -27,6 +27,9 @@ class AnnotationController:
         
         self._task_running = False
         self.redraw_timer = None
+        self._pending_zoom = 1.0
+        self._zoom_anchor = None
+        self._zoom_job = None
         self.autosave_timer_id = None
         self.thumb_loader = ThumbnailLoader()
         self.view.thumb_strip.on_click = self.on_thumb_click
@@ -896,15 +899,19 @@ class AnnotationController:
         
         paths_to_preload = []
         current_idx = self.model.current_image_index
-        
-        # Preload next 3 and previous 2 images
-        for offset in [1, 2, 3, -1, -2]:
+
+        # Preload next 3 and previous 2 images (and pre-render the current
+        # one so revisits at this window size skip the resize)
+        for offset in [1, 2, 3, -1, -2, 0]:
             idx = current_idx + offset
             if 0 <= idx < len(self.model.image_list):
                 img_path = os.path.join(self.model.image_dir, self.model.image_list[idx])
                 paths_to_preload.append(img_path)
-        
-        self.model.image_preloader.preload(paths_to_preload)
+
+        cw = self.view.canvas.winfo_width()
+        ch = self.view.canvas.winfo_height()
+        canvas_size = (cw, ch) if cw > 1 and ch > 1 else None
+        self.model.image_preloader.preload(paths_to_preload, canvas_size)
 
     def update_recent_projects_menu(self):
         """Update the recent projects dropdown menu."""
@@ -1704,7 +1711,20 @@ class AnnotationController:
         self.view.canvas.scan_dragto(event.x, event.y, gain=1)
 
     def on_zoom(self, event):
-        self._zoom_at(event.x, event.y, 1.1 if event.delta > 0 else 1 / 1.1)
+        # Coalesce wheel ticks: accumulate the multiplier and redraw at most
+        # once per ~15ms instead of once per event (redraws are the expensive
+        # part; rapid ticks collapse losslessly into one multiplicative step).
+        self._pending_zoom *= 1.1 if event.delta > 0 else 1 / 1.1
+        self._zoom_anchor = (event.x, event.y)
+        if self._zoom_job is None:
+            self._zoom_job = self.view.root.after(15, self._apply_pending_zoom)
+
+    def _apply_pending_zoom(self):
+        self._zoom_job = None
+        multiplier, anchor = self._pending_zoom, self._zoom_anchor
+        self._pending_zoom, self._zoom_anchor = 1.0, None
+        if anchor and multiplier != 1.0:
+            self._zoom_at(anchor[0], anchor[1], multiplier)
 
     def zoom_in(self):
         self._zoom_at(self.view.canvas.winfo_width() / 2,

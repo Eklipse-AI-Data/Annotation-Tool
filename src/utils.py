@@ -8,6 +8,7 @@ import threading
 import concurrent.futures
 from collections import OrderedDict
 from PIL import Image
+from src import accel
 
 # Anchor all app files to the project root so the tool works regardless of
 # the current working directory it is launched from.
@@ -441,6 +442,12 @@ def resize_images_to_lowres(input_folder, target_width=720, progress_callback=No
 
 # ==================== IMAGE PRELOADER ====================
 
+def fit_dims(img_w, img_h, canvas_w, canvas_h):
+    """Fit-to-window output size — must match redraw_canvas's scale math."""
+    scale = min(canvas_w / img_w, canvas_h / img_h)
+    return int(img_w * scale), int(img_h * scale)
+
+
 class ImagePreloader:
     """
     Background image preloader for smoother navigation.
@@ -448,6 +455,7 @@ class ImagePreloader:
     """
     def __init__(self, cache_size=7):
         self.cache = OrderedDict()
+        self.render_cache = OrderedDict()  # (path, cw, ch) -> fit-to-window PIL image
         self.cache_size = cache_size
         self.lock = threading.Lock()
         self._loading = set()  # Track images currently being loaded
@@ -474,34 +482,78 @@ class ImagePreloader:
                 while len(self.cache) > self.cache_size:
                     self.cache.popitem(last=False)
     
-    def preload(self, image_paths):
-        """Preload multiple images on the background executor."""
+    def get_resized(self, image_path, canvas_w, canvas_h):
+        """Get a pre-rendered fit-to-window image, or None if not cached."""
+        key = (image_path, canvas_w, canvas_h)
+        with self.lock:
+            if key in self.render_cache:
+                self.render_cache.move_to_end(key)
+                return self.render_cache[key]
+        return None
+
+    def put_resized(self, image_path, canvas_w, canvas_h, image):
+        """Cache a pre-rendered fit-to-window image."""
+        key = (image_path, canvas_w, canvas_h)
+        with self.lock:
+            if key in self.render_cache:
+                self.render_cache.move_to_end(key)
+            else:
+                self.render_cache[key] = image
+                while len(self.render_cache) > self.cache_size:
+                    self.render_cache.popitem(last=False)
+
+    def preload(self, image_paths, canvas_size=None):
+        """Preload multiple images on the background executor.
+
+        With canvas_size=(w, h), also pre-renders the fit-to-window resized
+        image so switching only has to build the PhotoImage on the UI thread.
+        """
         to_load = []
         with self.lock:
             for path in image_paths:
-                if path not in self.cache and path not in self._loading:
-                    self._loading.add(path)
-                    to_load.append(path)
+                if path in self._loading:
+                    continue
+                render_key = ((path,) + tuple(canvas_size)) if canvas_size else None
+                if path in self.cache and (render_key is None or
+                                           render_key in self.render_cache):
+                    continue
+                self._loading.add(path)
+                to_load.append(path)
         for path in to_load:
-            self._executor.submit(self._load_image, path)
-    
-    def _load_image(self, image_path):
-        """Load a single image (runs in background thread)."""
+            self._executor.submit(self._load_image, path, canvas_size)
+
+    def _load_image(self, image_path, canvas_size=None):
+        """Load (and optionally pre-render) a single image on a worker thread.
+
+        Only produces PIL images — PhotoImage construction must stay on the
+        UI thread (same convention as ThumbnailLoader).
+        """
         try:
             if os.path.exists(image_path):
-                img = Image.open(image_path)
-                img.load()  # Force load into memory
-                self.put(image_path, img)
+                img = self.get(image_path)
+                if img is None:
+                    img = Image.open(image_path)
+                    img.load()  # Force load into memory
+                    self.put(image_path, img)
+                if canvas_size and canvas_size[0] > 1 and canvas_size[1] > 1:
+                    cw, ch = canvas_size
+                    if self.get_resized(image_path, cw, ch) is None:
+                        nw, nh = fit_dims(img.width, img.height, cw, ch)
+                        if nw > 0 and nh > 0:
+                            resized = img if (nw, nh) == img.size else \
+                                accel.resize(img, (nw, nh))
+                            self.put_resized(image_path, cw, ch, resized)
         except Exception as e:
             print(f"Preload error for {image_path}: {e}")
         finally:
             with self.lock:
                 self._loading.discard(image_path)
-    
+
     def clear(self):
-        """Clear the cache."""
+        """Clear the caches."""
         with self.lock:
             self.cache.clear()
+            self.render_cache.clear()
 
     def shutdown(self):
         """Stop accepting preload work (called on app close)."""

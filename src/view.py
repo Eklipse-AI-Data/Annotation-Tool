@@ -1,6 +1,8 @@
+import os
 import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk
+from src import accel
 from src.utils import denormalize_box
 from src.ui_components import (DarkButton, DarkLabel, DarkFrame, SectionLabel,
                                SidebarFrame, THEME, DarkEntry, DarkProgressBar,
@@ -24,6 +26,8 @@ class AnnotationView:
         self.cached_image_obj = None
         self.tk_image = None
         self.crosshair_ids = None
+        self.proxy_image = None  # screen-sized copy for cheap interim redraws
+        self.proxy_src = None    # source PIL image the proxy was built from
         
         # Shortcut overlay state
         self.shortcut_overlay_visible = False
@@ -472,10 +476,17 @@ class AnnotationView:
         
         # OPTIMIZATION: Check if we need to resize the image
         if self.cached_dims != (nw, nh) or self.cached_image_obj is None:
-            # We need to resize
-            # Fast mode uses bilinear, otherwise Lanczos
-            resample = Image.BILINEAR if fast else Image.LANCZOS
-            resized = self.model.current_image_pil.resize((nw, nh), resample)
+            # Pre-rendered by the background preloader? Skip the resize entirely.
+            resized = self._get_prerendered(nw, nh, cw, ch)
+            if resized is None:
+                if fast:
+                    # Interim frames resize from a screen-sized proxy instead
+                    # of the full-resolution source
+                    src = self._get_proxy(nw, nh, cw, ch)
+                    resized = accel.resize(src, (nw, nh), fast=True)
+                else:
+                    resized = accel.resize(self.model.current_image_pil,
+                                           (nw, nh), fast=False)
             self.tk_image = ImageTk.PhotoImage(resized)
             self.cached_image_obj = self.tk_image
             self.cached_dims = (nw, nh)
@@ -507,6 +518,45 @@ class AnnotationView:
         if self.model.preview_visible:
             for i, box in enumerate(self.model.preview_boxes):
                 self.draw_box_on_canvas(box, False, i, preview=True)
+
+    def _get_prerendered(self, nw, nh, cw, ch):
+        """Fit-to-window image pre-rendered by the background preloader.
+
+        Returns None unless the pre-render exists and exactly matches the
+        needed output size (it won't while zoomed, or if the window was
+        resized since it was rendered).
+        """
+        if self.model.current_image_index == -1 or not self.model.image_list:
+            return None
+        path = os.path.join(self.model.image_dir,
+                            self.model.image_list[self.model.current_image_index])
+        pre = self.model.image_preloader.get_resized(path, cw, ch)
+        if pre is not None and pre.size == (nw, nh):
+            return pre
+        return None
+
+    def _get_proxy(self, nw, nh, cw, ch):
+        """Return the best source for a fast interim resize to (nw, nh).
+
+        Keeps a cached copy of the source downscaled to ~1.5x the canvas so
+        zoom/resize frames never resize the full-resolution image. Falls back
+        to the full-res source when the requested output exceeds the proxy's
+        resolution (upscaling the proxy would look mushy).
+        """
+        src = self.model.current_image_pil
+        if self.proxy_src is not src:
+            self.proxy_image = None
+            self.proxy_src = src
+        max_w, max_h = int(cw * 1.5), int(ch * 1.5)
+        scale = min(max_w / src.width, max_h / src.height)
+        if scale >= 1.0:
+            return src  # source already screen-sized
+        pw, ph = int(src.width * scale), int(src.height * scale)
+        if self.proxy_image is None or self.proxy_image.size != (pw, ph):
+            self.proxy_image = accel.resize(src, (pw, ph), fast=True)
+        if nw > self.proxy_image.width or nh > self.proxy_image.height:
+            return src  # zoomed past proxy resolution
+        return self.proxy_image
 
     def _box_canvas_coords(self, box):
         """Map a normalized box to canvas coordinates (shared by draw and move)."""
