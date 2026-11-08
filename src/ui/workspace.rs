@@ -372,6 +372,22 @@ impl Workspace {
                     .child(self.toolbar_indicator()),
             )
             .child(div().flex_1())
+            .child(widgets::button("tb-previous", "Previous", BtnVariant::Default, theme)
+                .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
+                    ws.prev_image_action(&crate::actions::PrevImage, window, cx)
+                })))
+            .child(div().px(px(8.)).text_size(px(11.)).text_color(theme.rgb(theme.fg_muted))
+                .child(format!("{} / {}",
+                    (app_state(cx).current_image_index + 1).max(0), app_state(cx).image_list.len())))
+            .child(widgets::button("tb-next", "Next", BtnVariant::Default, theme)
+                .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
+                    ws.next_image_action(&crate::actions::NextImage, window, cx)
+                })))
+            .child(widgets::toolbar_divider(theme))
+            .child(widgets::button("tb-fit", "Fit image", BtnVariant::Default, theme)
+                .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
+                    ws.zoom_reset_action(&crate::actions::ZoomReset, window, cx)
+                })))
             .child(widgets::icon_button("tb-keys", "keyboard", self.help_visible, theme).on_click(
                 cx.listener(|ws: &mut Workspace, _, _, cx| {
                     ws.help_visible = !ws.help_visible;
@@ -461,6 +477,7 @@ impl Workspace {
             .w(px(292.))
             .flex_none()
             .h_full()
+            .flex()
             .flex_col()
             .bg(theme.rgb(theme.bg_sidebar))
             .border_r_1()
@@ -473,182 +490,182 @@ impl Workspace {
 
     fn render_project_tab(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = ThemeState::current(cx);
-        let (dir_label, pct, progress_text): (SharedString, f32, SharedString) = {
-            let state = app_state(cx);
-            let dir_label: SharedString = if state.image_dir.is_empty() {
-                "No directory selected".into()
-            } else {
-                state.image_dir.clone().into()
-            };
-            let (annotated, total) = state.get_annotated_count();
-            let pct = if total > 0 { annotated as f32 / total as f32 } else { 0.0 };
-            (
-                dir_label,
-                pct,
-                format!("{annotated}/{total} ({}%)", (pct * 100.0) as i32).into(),
-            )
-        };
+        let state = app_state(cx);
+        let has_folder = !state.image_dir.is_empty();
+        let has_output = !state.output_dir.is_empty();
+        let dir_path = state.image_dir.clone();
+        let dir_name = std::path::Path::new(&dir_path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| dir_path.clone());
+        let visible_files = state.image_list.len();
+        let total_files = state.full_image_list.len();
+        let loading = state.class_counts_loading;
+        let count_error = state.class_counts_error.clone();
+        let counts_ready = has_folder && has_output && !loading && count_error.is_none();
+        let total_boxes: usize = state.class_counts.values().sum();
+        let used_classes = state.classes.iter()
+            .filter(|class| state.class_counts.get(&class.id).copied().unwrap_or(0) > 0)
+            .count();
+        let available_classes = state.classes.len();
+        let class_rows: Vec<_> = state.classes.iter().map(|class| {
+            let id = class.id;
+            let count = state.class_counts.get(&id).copied().unwrap_or(0);
+            div()
+                .id(("folder-class", id as usize))
+                .h(px(28.))
+                .w_full()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .px(px(6.))
+                .rounded(px(5.))
+                .text_size(px(12.))
+                .when(self.filter_class_id == Some(id), |el| el.bg(theme.selection_bg()))
+                .when(counts_ready, |el| {
+                    el.cursor_pointer()
+                        .hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1)))
+                })
+                .child(widgets::color_swatch(class.color, px(10.), theme))
+                .child(div().flex_1().min_w_0().overflow_hidden()
+                    .child(format!("{}: {}", id, class.name)))
+                .child(div().w(px(48.)).flex_none().text_right()
+                    .text_color(theme.rgb(theme.fg_muted))
+                    .child(if counts_ready { count.to_string() } else { "...".to_string() }))
+                .on_click(cx.listener(move |ws: &mut Workspace, _, window, cx| {
+                    let state = app_state(cx);
+                    if !state.class_counts_loading && state.class_counts_error.is_none()
+                        && !state.output_dir.is_empty() && !ws.filter_scan_running && !ws.task_running {
+                        ws.filter_class_id = Some(id);
+                        ws.filter_open = false;
+                        ws.apply_image_filter(window, cx);
+                    }
+                }))
+                .into_any_element()
+        }).collect();
 
-        // Directory section
-        let directory = div().child(widgets::collapsible_header(
-            "col-dirs",
-            "DIRECTORY",
-            self.collapse_dirs,
-            theme,
-        )
-        .on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
+        let directory = widgets::collapsible_header(
+            "col-dirs", "Folder setup", self.collapse_dirs, theme,
+        ).on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
             ws.collapse_dirs = !ws.collapse_dirs;
             cx.notify();
-        })));
+        }));
         let directory_content = div()
-            .px(px(12.))
-            .pb(px(20.))
-            .flex_col()
-            .gap(px(8.))
-            .child(
-                widgets::button_with_icon(
-                    "btn-open-images",
-                    "Open Images",
-                    Some("folder-open"),
-                    BtnVariant::Accent,
-                    theme,
-                )
-                .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
-                    ws.open_images_dialog(window, cx)
-                })),
-            )
-            .child(
-                widgets::button_with_icon(
-                    "btn-set-output",
-                    "Set Output Directory",
-                    Some("database"),
-                    BtnVariant::Default,
-                    theme,
-                )
-                .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
-                    ws.set_output_dir_dialog(window, cx)
-                })),
-            )
-            .child(
-                div()
-                    .mt(px(2.))
-                    .mb(px(12.))
-                    .px(px(2.))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .text_size(px(11.))
-                    .text_color(theme.rgba(theme.fg_text, 0.5))
-                    .line_height(px(16.0))
-                    .child(super::icons::icon(
-                        "folder-open",
-                        12.0,
-                        theme.rgba(theme.fg_text, 0.4),
-                    ))
-                    .child(dir_label),
-            )
-            .child(
-                div()
-                    .mt(px(14.))
-                    .mb(px(6.))
-                    .text_size(px(10.5))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(theme.rgba(theme.fg_text, 0.55))
-                    .child("RECENT PROJECTS"),
-            )
+            .px(px(12.)).pb(px(8.)).flex().flex_col().gap(px(6.))
+            .flex_none()
+            .child(widgets::button_with_icon(
+                "btn-open-images", "Open image folder", Some("folder-open"), BtnVariant::Accent, theme,
+            ).w_full().on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
+                ws.open_images_dialog(window, cx)
+            })))
+            .child(widgets::button_with_icon(
+                "btn-set-output", "Set output folder", Some("database"), BtnVariant::Default, theme,
+            ).w_full().on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
+                ws.set_output_dir_dialog(window, cx)
+            })))
+            .when(has_folder, |el| el.child(
+                div().flex().flex_col().gap(px(2.)).py(px(4.))
+                    .child(div().text_size(px(13.)).font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(dir_name))
+                    .child(div().text_size(px(11.)).line_height(px(16.))
+                        .text_color(theme.rgb(theme.fg_muted)).child(dir_path)),
+            ))
+            .when(!has_folder, |el| el.child(widgets::caption(
+                "Open a folder to browse images and review saved boxes.", theme,
+            )))
             .child(self.render_recents_dropdown(cx));
 
-        // Files section
-        let files_header = div().child(widgets::collapsible_header(
-            "col-files",
-            "FILES",
-            self.collapse_files,
-            theme,
+        let summary_status = if loading {
+            "Counting saved boxes...".to_string()
+        } else if !has_folder {
+            "Choose an image folder to see class counts.".to_string()
+        } else if !has_output {
+            "Set the output folder to count saved boxes.".to_string()
+        } else if let Some(error) = count_error.as_ref() {
+            format!("Could not count saved boxes: {error}")
+        } else {
+            format!("{total_boxes} boxes · {used_classes}/{available_classes} classes used")
+        };
+        let summary = div()
+            .px(px(12.)).py(px(8.)).flex().flex_col().gap(px(6.))
+            .flex_none()
+            .border_t_1().border_color(theme.rgba(theme.border, 0.7))
+            .child(div().flex().items_center().justify_between()
+                .child(widgets::section_label("Saved boxes", theme))
+                .child(widgets::button_with_icon(
+                    "btn-refresh-counts", "Refresh", None, BtnVariant::Default, theme,
+                ).on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
+                    if !app_state(cx).class_counts_loading && !ws.task_running {
+                        ws.refresh_class_counts(cx);
+                    }
+                }))))
+            .child(div().text_size(px(11.)).line_height(px(16.))
+                .text_color(theme.rgb(if count_error.is_some() { theme.error } else { theme.fg_muted }))
+                .child(summary_status))
+            .when(available_classes > 0, |el| el
+                .child(div().flex().justify_between().text_size(px(11.))
+                    .text_color(theme.rgb(theme.fg_muted))
+                    .child("Class · click to filter").child("Boxes"))
+                .child(div().id("folder-class-counts").w_full()
+                    .h(px((available_classes as f32 * 28.).min(196.))).flex_none()
+                    .overflow_y_scroll().flex().flex_col().children(class_rows)))
+            .when(available_classes == 0, |el| el.child(widgets::caption(
+                "Add classes in Settings to see the class list.", theme,
+            )))
+            .when(counts_ready && total_boxes == 0, |el| el.child(widgets::caption(
+                "No saved boxes in this folder. Unsaved edits are not counted.", theme,
+            )));
+
+        let files_header = widgets::collapsible_header(
+            "col-files", "Files", self.collapse_files, theme,
         ).on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
             ws.collapse_files = !ws.collapse_files;
             cx.notify();
-        })));
-        let file_rows = self.render_file_list(cx);
-        let visible_files = app_state(cx).image_list.len() as f32;
-        let list_height = (visible_files * 28.0 + 8.0).min(430.0);
-
+        }));
         let files_content = div()
-            .px(px(12.))
-            .pb(px(20.))
-            .flex_col()
-            .gap(px(8.))
-            .child(
-                div()
-                    .flex()
-                    .gap(px(6.))
-                    .items_center()
-                    .child(div().flex_1().child(self.render_filter_dropdown(cx)))
-                    .child(
-                        widgets::icon_button("btn-filter", "filter", self.filter_class_id.is_some(), theme)
-                            .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
-                                ws.apply_image_filter(window, cx)
-                            })),
-                    )
-                    .child(
-                        widgets::icon_button("btn-clear-filter", "x", false, theme).on_click(
-                            cx.listener(|ws: &mut Workspace, _, window, cx| {
-                                ws.clear_image_filter(window, cx)
-                            }),
-                        ),
-                    ),
-            )
-            .child(
-                widgets::checkbox(
-                    "chk-unannotated",
-                    "Show Unannotated Only",
-                    app_state(cx).unannotated_filter_active,
-                    theme,
-                )
-                .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
-                    ws.toggle_unannotated_filter(window, cx)
-                })),
-            )
-            .child(div().h(px(list_height)).child(file_rows));
-
-        // Progress pinned at the bottom
-        let progress = div()
-            .px(px(12.))
-            .pt(px(10.))
-            .pb(px(12.))
+            .px(px(12.)).pb(px(10.)).flex().flex_col().gap(px(6.))
             .flex_none()
-            .flex_col()
-            .gap(px(8.))
-            .border_t_1()
-            .border_color(theme.rgba(theme.border, 0.7))
-            .child(
-                div()
-                    .flex()
-                    .items_baseline()
-                    .justify_between()
-                    .child(widgets::section_label("PROGRESS", theme))
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(theme.rgb(theme.fg_muted))
-                            .child(progress_text),
-                    ),
-            )
-            .child(widgets::progress_bar("progress-bar", pct, theme));
+            .child(div().flex().items_center().justify_between()
+                .child(div().text_size(px(11.)).text_color(theme.rgb(theme.fg_muted))
+                    .child(format!("{visible_files} / {total_files} files visible")))
+                .child(widgets::button_with_icon(
+                    "btn-clear-filter", "Clear filters", None, BtnVariant::Default, theme,
+                ).on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
+                    if !ws.filter_scan_running && !ws.task_running {
+                        app_state_mut(cx).unannotated_filter_active = false;
+                        ws.clear_image_filter(window, cx);
+                    }
+                }))))
+            .child(div().flex().gap(px(6.)).items_center()
+                .child(div().flex_1().min_w_0().child(self.render_filter_dropdown(cx)))
+                .child(widgets::icon_button("btn-filter", "filter", self.filter_class_id.is_some(), theme)
+                    .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
+                        ws.apply_image_filter(window, cx)
+                    }))))
+            .child(widgets::checkbox(
+                "chk-unannotated", "Show unannotated only", app_state(cx).unannotated_filter_active, theme,
+            ).on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
+                ws.toggle_unannotated_filter(window, cx)
+            })))
+            .when(self.filter_scan_running, |el| el.child(widgets::caption("Filtering files...", theme)))
+            .when(visible_files == 0, |el| el.child(widgets::caption(
+                if total_files > 0 { "No files match. Clear filters to show all images." }
+                else if has_folder { "No supported images in this folder. Open another image folder." }
+                else { "Your images will appear here after you open a folder." }, theme,
+            )))
+            .when(visible_files > 0, |el| el.child(
+                div().h(px((visible_files as f32 * 28. + 8.).min(280.)))
+                    .w_full().flex_none().flex().flex_col().child(self.render_file_list(cx)),
+            ));
 
-        div()
-            .id("project-tab-scroll")
-            .flex_1()
-            .min_h_0()
-            .flex_col()
-            .gap(px(12.))
-            .pt(px(2.))
+        div().id("project-tab-scroll").flex_1().min_h_0().flex().flex_col()
             .overflow_y_scroll()
             .child(directory)
             .when(self.collapse_dirs, |el| el.child(directory_content))
+            .child(summary)
             .child(files_header)
             .when(self.collapse_files, |el| el.child(files_content))
-            .child(div().flex_1())
-            .child(progress)
             .into_any_element()
     }
 
@@ -847,9 +864,7 @@ impl Workspace {
 
     fn render_file_list(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = ThemeState::current(cx);
-        let filenames: Vec<String> = app_state(cx).image_list.clone();
-        let current = app_state(cx).current_image_index;
-        let count = filenames.len();
+        let count = app_state(cx).image_list.len();
 
         let on_click = std::rc::Rc::new(cx.listener({
             move |ws: &mut Workspace, ix: &usize, _window, cx| {
@@ -859,18 +874,20 @@ impl Workspace {
             }
         }));
 
-        uniform_list("file-list", count, move |range, _window, _cx| {
-            let mut rows = Vec::new();
+        uniform_list("file-list", count, move |range, _window, cx| {
+            let state = app_state(cx);
+            let mut rows = Vec::with_capacity(range.len());
             for ix in range {
-                let is_current = current == ix as i64;
+                let Some(filename) = state.image_list.get(ix) else { continue };
+                let is_current = state.current_image_index == ix as i64;
                 rows.push(
                     div()
                         .id(("file-row", ix))
                         .px(px(10.))
                         .h(px(28.))
+                        .w_full()
                         .flex()
                         .items_center()
-                        .mx(px(4.))
                         .rounded(px(6.))
                         .text_size(px(12.))
                         .cursor_pointer()
@@ -880,7 +897,7 @@ impl Workspace {
                                 .text_color(theme.rgb(theme.fg_highlight))
                         })
                         .when(!is_current, |el| el.hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1))))
-                        .child(filenames[ix].clone())
+                        .child(filename.clone())
                         .on_click({
                             let on_click = std::rc::Rc::clone(&on_click);
                             move |_, window, cx| on_click(&ix, window, cx)
@@ -891,6 +908,8 @@ impl Workspace {
             rows
         })
         .track_scroll(self.file_list_scroll.clone())
+        .w_full()
+        .h_full()
         .flex_1()
         .min_h_0()
         .into_any_element()
@@ -914,6 +933,7 @@ impl Workspace {
         let classes_content = div()
             .px(px(12.))
             .pb(px(16.))
+            .flex()
             .flex_col()
             .gap(px(8.))
             .child(self.class_search.clone())
@@ -958,6 +978,7 @@ impl Workspace {
         let tools_content = div()
             .px(px(12.))
             .pb(px(16.))
+            .flex()
             .flex_col()
             .gap(px(2.))
             .child(
@@ -1005,9 +1026,12 @@ impl Workspace {
             );
 
         div()
+            .id("classes-tab-scroll")
             .flex_1()
             .min_h_0()
+            .flex()
             .flex_col()
+            .overflow_y_scroll()
             .gap(px(12.))
             .pt(px(2.))
             .child(classes_header)
@@ -1050,6 +1074,14 @@ impl Workspace {
             .collect();
         let current_class = state.current_class_index;
         let count = filtered.len();
+        let counts_ready = !state.class_counts_loading && state.class_counts_error.is_none()
+            && !state.image_dir.is_empty() && !state.output_dir.is_empty();
+        if count == 0 {
+            return div().p(px(8.)).child(widgets::caption(
+                if state.classes.is_empty() { "Add classes in Settings to start labeling." }
+                else { "No classes match. Clear the search to show all classes." }, theme,
+            )).into_any_element();
+        }
 
         let on_click = std::rc::Rc::new(cx.listener(move |ws: &mut Workspace, ix: &usize, _window, cx| {
             if let Some(c) = app_state(cx).classes.get(*ix) {
@@ -1062,23 +1094,19 @@ impl Workspace {
         uniform_list("class-list", count, move |range, _window, _cx| {
             let mut rows = Vec::new();
             for rix in range {
-                let (ix, _id, name, color, n) = &filtered[rix];
+                let (ix, id, name, color, n) = &filtered[rix];
                 let ix = *ix;
-                let is_current = current_class == ix as i64;
-                let label: SharedString = if *n > 0 {
-                    format!("{}: {}   ({})", _id, name, n).into()
-                } else {
-                    format!("{}: {}", _id, name).into()
-                };
+                let is_current = current_class == *id;
+                let label: SharedString = format!("{}: {}", id, name).into();
                 rows.push(
                     div()
                         .id(("class-row", rix))
                         .px(px(8.))
                         .h(px(30.))
+                        .w_full()
                         .flex()
                         .items_center()
                         .gap(px(8.))
-                        .mx(px(4.))
                         .rounded(px(6.))
                         .text_size(px(12.))
                         .cursor_pointer()
@@ -1089,7 +1117,10 @@ impl Workspace {
                         })
                         .when(!is_current, |el| el.hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1))))
                         .child(widgets::color_swatch(*color, px(11.0), theme))
-                        .child(label)
+                        .child(div().flex_1().min_w_0().overflow_hidden().child(label))
+                        .child(div().w(px(48.)).flex_none().text_right()
+                            .text_color(theme.rgb(theme.fg_muted))
+                            .child(if counts_ready { n.to_string() } else { "...".to_string() }))
                         .on_click({
                             let on_click = std::rc::Rc::clone(&on_click);
                             move |_, window, cx| on_click(&ix, window, cx)
@@ -1100,7 +1131,9 @@ impl Workspace {
             rows
         })
         .track_scroll(self.class_list_scroll.clone())
-        .h(px(400.))
+        .w_full()
+        .h(px((count as f32 * 30.).min(300.)))
+        .flex_none()
         .into_any_element()
     }
 
@@ -1170,9 +1203,9 @@ impl Workspace {
                         .id(("box-row", ix))
                         .px(px(10.))
                         .h(px(28.))
+                        .w_full()
                         .flex()
                         .items_center()
-                        .mx(px(4.))
                         .rounded(px(6.))
                         .text_size(px(12.))
                         .cursor_pointer()
@@ -1202,6 +1235,8 @@ impl Workspace {
             rows
         })
         .track_scroll(self.box_list_scroll.clone())
+        .w_full()
+        .h_full()
         .flex_1()
         .min_h_0();
 
@@ -1218,7 +1253,7 @@ impl Workspace {
             .shadow_md()
             .child(
                 // List fills the sidebar; header overlays the top band.
-                div().h_full().pt(px(26.)).child(list),
+                div().h_full().w_full().pt(px(26.)).flex().flex_col().child(list),
             )
             .child(
                 div()

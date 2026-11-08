@@ -467,16 +467,24 @@ impl Workspace {
             };
             let _ = cx.update(|cx| {
                 ws.update(cx, |ws, cx| {
-                    let had_image = {
+                    let current = {
+                        let state = app_state(cx);
+                        state.image_list.get(state.current_image_index.max(0) as usize).cloned()
+                    };
+                    ws.save_current_before_list_change(cx);
+                    let index = {
                         let state = app_state_mut(cx);
+                        state.filter_scan_generation = state.filter_scan_generation.wrapping_add(1);
                         state.output_dir = dir.clone();
                         state.refresh_preset_scope();
-                        !state.image_list.is_empty() && state.current_image_index != -1
+                        state.unannotated_filter_active = false;
+                        state.image_list = state.full_image_list.clone();
+                        current.and_then(|name| state.image_list.iter().position(|image| image == &name)).unwrap_or(0)
                     };
-                    if had_image {
-                        let filename =
-                            app_state(cx).image_list[app_state(cx).current_image_index as usize].clone();
-                        app_state_mut(cx).load_annotations(&filename);
+                    ws.filter_scan_running = false;
+                    ws.filter_class_id = None;
+                    if !app_state(cx).image_list.is_empty() {
+                        ws.load_image(index, cx);
                     }
                     app_state_mut(cx).save_session();
                     ws.refresh_class_counts(cx);
@@ -540,7 +548,10 @@ impl Workspace {
     // ------------------------------------------------------------------
 
     pub fn load_images(&mut self, cx: &mut Context<Self>) {
+        self.filter_class_id = None;
+        self.filter_scan_running = false;
         let state = app_state_mut(cx);
+        state.filter_scan_generation = state.filter_scan_generation.wrapping_add(1);
         let dir = Path::new(&state.image_dir).to_path_buf();
         let mut names: Vec<String> = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&dir) {
@@ -616,6 +627,11 @@ impl Workspace {
         state.current_image_index = -1;
         state.boxes.clear();
         state.selected_indices.clear();
+        state.current_image_size = None;
+        self.canvas.update(cx, |canvas, cx| {
+            canvas.current = None;
+            cx.notify();
+        });
     }
 
     pub fn next_image_action(&mut self, _: &NextImage, window: &mut Window, cx: &mut Context<Self>) {
@@ -864,140 +880,101 @@ impl Workspace {
         self.toggle_unannotated_filter(window, cx);
     }
 
-    pub fn toggle_unannotated_filter(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.task_running {
+    pub fn toggle_unannotated_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.task_running || self.filter_scan_running {
             return;
         }
-        let activating = !app_state(cx).unannotated_filter_active;
-        if activating && app_state(cx).output_dir.is_empty() {
-            self.alert("Warning", "Please set Output Directory first.");
-            cx.notify();
+        if app_state(cx).unannotated_filter_active {
+            self.clear_image_filter(window, cx);
             return;
         }
-        if self.filter_scan_running {
-            return;
-        }
-        self.filter_scan_running = true;
-        app_state_mut(cx).unannotated_filter_active = activating;
-        cx.notify();
-
-        if !activating {
-            // Restore the full list.
-            self.save_current_before_list_change(cx);
-            {
-                let state = app_state_mut(cx);
-                state.image_list = state.full_image_list.clone();
-            }
-            self.filter_scan_running = false;
-            if !app_state(cx).image_list.is_empty() {
-                self.load_image(0, cx);
-            }
-            cx.notify();
-            return;
-        }
-
-        let output_dir = app_state(cx).output_dir.clone();
-        let images = app_state(cx).full_image_list.clone();
-        let ws = cx.entity();
-        cx.background_spawn(async move {
-            let mut unannotated = Vec::new();
-            for name in &images {
-                let stem = Path::new(name)
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                let txt = Path::new(&output_dir).join(format!("{stem}.txt"));
-                let is_unannotated = match std::fs::metadata(&txt) {
-                    Ok(meta) => meta.len() == 0,
-                    Err(_) => true,
-                };
-                if is_unannotated {
-                    unannotated.push(name.clone());
-                }
-            }
-            unannotated
-        })
-        .detach_and_attach_cb(cx, move |unannotated, cx| {
-            ws.update(cx, |ws, cx| {
-                ws.filter_scan_running = false;
-                ws.save_current_before_list_change(cx);
-                app_state_mut(cx).image_list = unannotated;
-                if !app_state(cx).image_list.is_empty() {
-                    ws.load_image(0, cx);
-                }
-                cx.notify();
-            });
-        });
+        self.start_image_filter_scan(None, cx);
     }
 
     pub fn apply_image_filter(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if self.task_running || self.filter_scan_running {
             return;
         }
-        let Some(class_id) = self.filter_class_id else {
-            return;
-        };
+        if let Some(class_id) = self.filter_class_id {
+            self.start_image_filter_scan(Some(class_id), cx);
+        }
+    }
+
+    fn start_image_filter_scan(&mut self, class_id: Option<i64>, cx: &mut Context<Self>) {
         if app_state(cx).output_dir.is_empty() {
             self.alert("Warning", "Please set Output Directory first.");
             cx.notify();
             return;
         }
+        // Flush the current label before the worker reads it.
+        self.save_current_before_list_change(cx);
+        let (image_dir, output_dir, images, generation) = {
+            let state = app_state_mut(cx);
+            state.filter_scan_generation = state.filter_scan_generation.wrapping_add(1);
+            (state.image_dir.clone(), state.output_dir.clone(), state.full_image_list.clone(), state.filter_scan_generation)
+        };
         self.filter_scan_running = true;
         cx.notify();
-        let output_dir = app_state(cx).output_dir.clone();
-        let images = app_state(cx).full_image_list.clone();
         let ws = cx.entity();
+        let scan_output = output_dir.clone();
+        let scan_images = images.clone();
         cx.background_spawn(async move {
-            let mut matched = Vec::new();
-            for name in &images {
-                let stem = Path::new(name)
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                let txt = Path::new(&output_dir).join(format!("{stem}.txt"));
-                if let Ok(text) = std::fs::read_to_string(&txt) {
-                    for line in text.lines() {
-                        let mut parts = line.split_whitespace();
-                        if let Some(first) = parts.next()
-                            && parts.count() >= 4
-                            && first.parse::<i64>() == Ok(class_id)
-                        {
-                            matched.push(name.clone());
-                            break;
-                        }
+            crate::state::model::scan_class_counts(&scan_output, &scan_images).map(|counts| {
+                scan_images.into_iter().filter(|name| {
+                    let mut label = Path::new(name).file_stem().unwrap_or_default().to_os_string();
+                    label.push(".txt");
+                    let per_label = counts.get(&Path::new(&scan_output).join(label));
+                    match class_id {
+                        Some(id) => per_label.is_some_and(|counts| counts.contains_key(&id)),
+                        None => per_label.is_none_or(|counts| counts.is_empty()),
                     }
-                }
-            }
-            matched
+                }).collect::<Vec<_>>()
+            })
         })
-        .detach_and_attach_cb(cx, move |matched, cx| {
+        .detach_and_attach_cb(cx, move |result, cx| {
             ws.update(cx, |ws, cx| {
+                let state = app_state(cx);
+                if state.filter_scan_generation != generation || state.image_dir != image_dir
+                    || state.output_dir != output_dir || state.full_image_list != images {
+                    return;
+                }
                 ws.filter_scan_running = false;
-                ws.save_current_before_list_change(cx);
-                app_state_mut(cx).image_list = matched;
+                match result {
+                    Ok(matched) => {
+                        ws.save_current_before_list_change(cx);
+                        let state = app_state_mut(cx);
+                        state.image_list = matched;
+                        state.unannotated_filter_active = class_id.is_none();
+                        ws.filter_class_id = class_id;
+                    }
+                    Err(error) => ws.alert("Filter error", error),
+                }
                 if !app_state(cx).image_list.is_empty() {
                     ws.load_image(0, cx);
-                } else {
-                    ws.alert("Filter", "No images found for this class.");
                 }
+                ws.sync_filmstrip_current(cx);
                 cx.notify();
             });
         });
     }
 
     pub fn clear_image_filter(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.filter_scan_running || self.task_running {
+        if self.task_running {
             return;
         }
         self.save_current_before_list_change(cx);
         {
             let state = app_state_mut(cx);
+            state.filter_scan_generation = state.filter_scan_generation.wrapping_add(1);
             state.image_list = state.full_image_list.clone();
+            state.unannotated_filter_active = false;
         }
+        self.filter_scan_running = false;
         self.filter_class_id = None;
         if !app_state(cx).image_list.is_empty() {
             self.load_image(0, cx);
         }
+        self.sync_filmstrip_current(cx);
         cx.notify();
     }
 
@@ -1015,36 +992,28 @@ impl Workspace {
     }
 
     pub fn refresh_class_counts(&mut self, cx: &mut Context<Self>) {
-        let output_dir = app_state(cx).output_dir.clone();
-        if output_dir.is_empty() {
-            app_state_mut(cx).class_counts.clear();
-            cx.notify();
+        let (image_dir, output_dir, images, generation) = {
+            let state = app_state_mut(cx);
+            let generation = state.begin_class_counts_scan();
+            (state.image_dir.clone(), state.output_dir.clone(), state.full_image_list.clone(), generation)
+        };
+        cx.notify();
+        if !app_state(cx).class_counts_loading {
             return;
         }
         let ws = cx.entity();
+        let scan_output = output_dir.clone();
+        let scan_images = images.clone();
         cx.background_spawn(async move {
-            let mut counts: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
-            if let Ok(entries) = std::fs::read_dir(&output_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case("txt")) {
-                        if let Ok(text) = std::fs::read_to_string(&path) {
-                            for line in text.lines() {
-                                if let Some(first) = line.split_whitespace().next()
-                                    && let Ok(id) = first.parse::<i64>()
-                                {
-                                    *counts.entry(id).or_insert(0) += 1;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            counts
+            crate::state::model::scan_class_counts(&scan_output, &scan_images)
         })
         .detach_and_attach_cb(cx, move |counts, cx| {
             ws.update(cx, |_ws, cx| {
-                app_state_mut(cx).class_counts = counts;
+                let state = app_state_mut(cx);
+                if state.image_dir != image_dir || state.output_dir != output_dir || state.full_image_list != images {
+                    return;
+                }
+                state.finish_class_counts_scan(generation, counts);
                 cx.notify();
             });
         });

@@ -143,31 +143,6 @@ pub fn recent_into_value(recent: &[RecentProject]) -> Value {
     )
 }
 
-/// Set of image filenames that have a non-empty `<stem>.txt` in the output dir.
-pub fn get_annotated_images(image_dir: &str, output_dir: &str, image_list: &[String]) -> std::collections::HashSet<String> {
-    let _ = image_dir; // Python accepts it but only uses output_dir
-    let mut annotated = std::collections::HashSet::new();
-    if output_dir.is_empty() {
-        return annotated;
-    }
-    let out = std::path::Path::new(output_dir);
-    if !out.is_dir() {
-        return annotated;
-    }
-    for img in image_list {
-        let stem = std::path::Path::new(img)
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let txt = out.join(format!("{stem}.txt"));
-        if let Ok(meta) = std::fs::metadata(&txt) {
-            if meta.len() > 0 {
-                annotated.insert(img.clone());
-            }
-        }
-    }
-    annotated
-}
 
 #[cfg(test)]
 mod tests {

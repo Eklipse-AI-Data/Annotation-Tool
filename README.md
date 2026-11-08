@@ -15,9 +15,7 @@ animations and drop-in compatibility with the Python tool's data.
   presets, `session.json` and `config.json` (Tk keybinding syntax included) are all
   read/written byte-compatible with the Python tool. Point `ANNOTATION_TOOL_HOME` at the
   Python checkout and both apps share the same live state.
-- **Refined themes** — all six originals (Midnight Glass, Anthropic, Emerald, Ruby,
-  Amber, Frost), restyled with a modern surface hierarchy, plus toasts instead of
-  blocking popups.
+- **Light and dark themes** with shared controls and non-blocking notifications.
 - **Everything ported** — draw/stamp/move/resize boxes, multi-select, undo/redo
   (snapshot semantics identical to the original, quirks included), copy/paste/duplicate,
   box presets (tap/hold Ctrl+1–9), image filters, class editor with file remapping +
@@ -68,6 +66,22 @@ set ANNOTATION_TOOL_HOME=D:\path\to\Annotation-Tool
 
 All bindings are customizable in Settings → Keybindings (stored in `config.json` using
 the original Tk syntax, so both tools read them).
+
+## Project panel
+
+- **Saved boxes** replaces the project progress bar. Each class shows its saved box
+  count, including zero-count classes. The summary shows total boxes and classes used.
+- Counts cover label files that match images in the open folder. Unrelated label
+  files in the output folder do not contribute. Unsaved edits are not counted.
+- Click a class count to show images with that class. Use **Clear filters** to restore
+  all images, or **Show unannotated only** to find images without saved boxes.
+- Use **Refresh** after another program changes label files. The panel shows loading
+  and read errors instead of reporting an incomplete scan as zero boxes.
+- The file list shows visible and total image counts. The toolbar has **Previous**,
+  **Next**, the current image position, and **Fit image** controls.
+
+Export and class-remapping operations still show task progress.
+
 
 ## Differences from the Python tool
 

@@ -63,6 +63,12 @@ pub struct AppState {
     /// Indices into `classes` matching the current search text.
     pub filtered_classes: Vec<usize>,
     pub class_counts: HashMap<i64, usize>,
+    pub class_counts_loading: bool,
+    pub class_counts_error: Option<String>,
+    pub filter_scan_generation: u64,
+    class_counts_generation: u64,
+    class_count_labels: HashSet<PathBuf>,
+    class_counts_by_label: HashMap<PathBuf, HashMap<i64, usize>>,
 
     // History
     pub history: Vec<Vec<BBox>>,
@@ -130,6 +136,12 @@ impl AppState {
             current_class_index: -1,
             filtered_classes: Vec::new(),
             class_counts: HashMap::new(),
+            class_counts_loading: false,
+            class_counts_error: None,
+            filter_scan_generation: 0,
+            class_counts_generation: 0,
+            class_count_labels: HashSet::new(),
+            class_counts_by_label: HashMap::new(),
             history: Vec::new(),
             redo_stack: Vec::new(),
             presets: BTreeMap::new(),
@@ -244,23 +256,75 @@ impl AppState {
         if !valid_boxes.is_empty() || txt.exists() {
             let final_boxes: Vec<BBox> =
                 valid_boxes.into_iter().filter(|b| b.class_id != -1).copied().collect();
-            if let Err(err) = yolo::save_yolo(&txt, &final_boxes) {
-                eprintln!("Error saving YOLO file {}: {err}", txt.display());
+            match yolo::save_yolo(&txt, &final_boxes) {
+                Ok(()) => {
+                    if self.class_count_labels.contains(&txt) {
+                        let mut counts = HashMap::new();
+                        for bbox in &final_boxes {
+                            let coordinates = [bbox.x_center, bbox.y_center, bbox.w, bbox.h]
+                                .map(|value| (value * 1_000_000.0).round() / 1_000_000.0);
+                            if valid_yolo_row(bbox.class_id, coordinates) {
+                                *counts.entry(bbox.class_id).or_default() += 1;
+                            }
+                        }
+                        self.replace_label_counts(txt, counts);
+                    }
+                }
+                Err(err) => {
+                    self.class_counts_error = Some(format!("Cannot save {}: {err}", txt.display()));
+                }
             }
         }
     }
 
-    /// (annotated, total) across the full image list.
-    pub fn get_annotated_count(&self) -> (usize, usize) {
-        if self.full_image_list.is_empty() {
-            return (0, 0);
+    /// Starts a folder scan. Saves made while it runs override its file counts.
+    pub fn begin_class_counts_scan(&mut self) -> u64 {
+        self.class_counts_generation = self.class_counts_generation.wrapping_add(1);
+        self.class_counts.clear();
+        self.class_counts_by_label.clear();
+        self.class_count_labels = annotation_labels(&self.output_dir, &self.full_image_list);
+        self.class_counts_loading = !self.class_count_labels.is_empty();
+        self.class_counts_error = None;
+        self.class_counts_generation
+    }
+
+    pub fn finish_class_counts_scan(
+        &mut self,
+        generation: u64,
+        result: Result<HashMap<PathBuf, HashMap<i64, usize>>, String>,
+    ) {
+        if generation != self.class_counts_generation {
+            return;
         }
-        let annotated = session::get_annotated_images(
-            &self.image_dir,
-            &self.output_dir,
-            &self.full_image_list,
-        );
-        (annotated.len(), self.full_image_list.len())
+        self.class_counts_loading = false;
+        match result {
+            Ok(mut counts) => {
+                counts.extend(self.class_counts_by_label.drain());
+                self.class_counts.clear();
+                for per_label in counts.values() {
+                    for (&id, &count) in per_label {
+                        *self.class_counts.entry(id).or_default() += count;
+                    }
+                }
+                self.class_counts_by_label = counts;
+            }
+            Err(error) => self.class_counts_error = Some(error),
+        }
+    }
+
+    fn replace_label_counts(&mut self, label: PathBuf, counts: HashMap<i64, usize>) {
+        if let Some(previous) = self.class_counts_by_label.remove(&label) {
+            for (id, count) in previous {
+                if let Some(total) = self.class_counts.get_mut(&id) {
+                    *total -= count;
+                }
+            }
+        }
+        for (&id, &count) in &counts {
+            *self.class_counts.entry(id).or_default() += count;
+        }
+        self.class_counts_by_label.insert(label, counts);
+        self.class_counts.retain(|_, count| *count != 0);
     }
 
     // ------------------------------------------------------------------
@@ -400,6 +464,78 @@ impl AppState {
         session::add_recent_project(&name, &self.image_dir, &self.output_dir);
         self.recent_projects = session::get_recent_projects();
     }
+}
+
+/// Each label is counted once, even when image extensions share a stem.
+pub fn annotation_labels(output_dir: &str, images: &[String]) -> HashSet<PathBuf> {
+    if output_dir.is_empty() {
+        return HashSet::new();
+    }
+    images.iter().filter_map(|image| {
+        let mut label = Path::new(image).file_stem()?.to_os_string();
+        label.push(".txt");
+        Some(Path::new(output_dir).join(label))
+    }).collect()
+}
+
+fn valid_yolo_row(class_id: i64, values: [f64; 4]) -> bool {
+    class_id >= 0
+        && values.iter().all(|value| value.is_finite() && (0.0..=1.0).contains(value))
+        && values[2] > 0.0 && values[3] > 0.0
+}
+
+/// Counts valid detection rows. Bad rows do not hide later valid rows.
+pub fn count_yolo_rows(text: &str) -> HashMap<i64, usize> {
+    let mut counts = HashMap::new();
+    for line in text.lines() {
+        let mut tokens = line.split_whitespace();
+        let Some(class_id) = tokens.next().and_then(|token| token.parse::<i64>().ok()) else {
+            continue;
+        };
+        let mut coordinates = [0.0; 4];
+        let mut valid = true;
+        for coordinate in &mut coordinates {
+            match tokens.next().and_then(|token| token.parse::<f64>().ok()) {
+                Some(value) => *coordinate = value,
+                None => { valid = false; break; }
+            }
+        }
+        if valid && tokens.next().is_none() && valid_yolo_row(class_id, coordinates) {
+            *counts.entry(class_id).or_default() += 1;
+        }
+    }
+    counts
+}
+
+pub fn scan_class_counts(
+    output_dir: &str,
+    images: &[String],
+) -> Result<HashMap<PathBuf, HashMap<i64, usize>>, String> {
+    if !output_dir.is_empty() && !images.is_empty() {
+        match std::fs::metadata(output_dir) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return Err(format!("Output path is not a directory: {output_dir}")),
+            Err(error) => return Err(format!("Cannot read output directory {output_dir}: {error}")),
+        }
+    }
+    scan_class_counts_with(output_dir, images, |path| std::fs::read_to_string(path))
+}
+
+fn scan_class_counts_with(
+    output_dir: &str,
+    images: &[String],
+    mut read: impl FnMut(&Path) -> std::io::Result<String>,
+) -> Result<HashMap<PathBuf, HashMap<i64, usize>>, String> {
+    let mut counts = HashMap::new();
+    for label in annotation_labels(output_dir, images) {
+        let per_label = match read(&label) {
+            Ok(text) => count_yolo_rows(&text),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
+            Err(error) => return Err(format!("Cannot read {}: {error}", label.display())),
+        };
+        counts.insert(label, per_label);
+    }
+    Ok(counts)
 }
 
 /// `os.path.abspath` equivalent for Windows paths: makes the path absolute
@@ -555,6 +691,12 @@ mod tests {
             current_class_index: -1,
             filtered_classes: vec![],
             class_counts: HashMap::new(),
+            class_counts_loading: false,
+            class_counts_error: None,
+            filter_scan_generation: 0,
+            class_counts_generation: 0,
+            class_count_labels: HashSet::new(),
+            class_counts_by_label: HashMap::new(),
             history: vec![],
             redo_stack: vec![],
             presets: BTreeMap::new(),
@@ -570,9 +712,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn undo_redo_snapshot_semantics() {
-        let mut state = AppState {
+    fn test_state() -> AppState {
+        AppState {
             session: Map::new(),
             config: Config::load_from(Path::new("nope.json")),
             classes: vec![],
@@ -600,11 +741,134 @@ mod tests {
             current_class_index: -1,
             filtered_classes: vec![],
             class_counts: HashMap::new(),
+            class_counts_loading: false,
+            class_counts_error: None,
+            filter_scan_generation: 0,
+            class_counts_generation: 0,
+            class_count_labels: HashSet::new(),
+            class_counts_by_label: HashMap::new(),
             history: vec![],
             redo_stack: vec![],
             presets: BTreeMap::new(),
             recent_projects: vec![],
-        };
+        }
+    }
+
+    struct CountFolder(PathBuf);
+
+    impl CountFolder {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!("annotation-counts-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn output(&self) -> String { self.0.to_string_lossy().into_owned() }
+
+        fn write(&self, name: &str, text: &str) {
+            std::fs::write(self.0.join(name), text).unwrap();
+        }
+    }
+
+    impl Drop for CountFolder {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+
+    #[test]
+    fn class_counts_scope_deduplicates_stems_and_excludes_unrelated_text() {
+        let folder = CountFolder::new();
+        folder.write("frame.1.txt", "0 0.5 0.5 0.2 0.2\n1 0.5 0.5 0.1 0.1\n");
+        folder.write("frame2.txt", "0 0.5 0.5 0.2 0.2\n");
+        folder.write("unrelated.txt", "2 0.5 0.5 0.2 0.2\n");
+        folder.write("classes.txt", "3 0.5 0.5 0.2 0.2\n");
+        let mut state = test_state();
+        state.output_dir = folder.output();
+        state.full_image_list = ["frame.1.jpg", "frame.1.png", "frame2.jpg", "missing.jpg"].map(String::from).to_vec();
+        state.image_list = vec!["frame2.jpg".into()];
+        let generation = state.begin_class_counts_scan();
+        let scanned = scan_class_counts(&state.output_dir, &state.full_image_list).unwrap();
+        assert_eq!(scanned.len(), 3);
+        state.finish_class_counts_scan(generation, Ok(scanned));
+        assert_eq!(state.class_counts, HashMap::from([(0, 2), (1, 1)]));
+        assert!(!state.class_counts_loading);
+        assert!(state.class_counts_error.is_none());
+    }
+
+    #[test]
+    fn class_counts_accept_only_valid_detection_rows_and_continue_after_bad_rows() {
+        let text = "0 0 1 0.1 1\n0 0.5 0.5 0.2 0.2\n1\n1 nope 0.5 0.2 0.2\n-1 0.5 0.5 0.2 0.2\n1 NaN 0.5 0.2 0.2\n1 0.5 inf 0.2 0.2\n1 1.1 0.5 0.2 0.2\n1 0.5 0.5 0 0.2\n1 0.5 0.5 -0.1 0.2\n1 0.5 0.5 0.2 0.2 extra\n42 0.5 0.5 0.2 0.2\n";
+        assert_eq!(count_yolo_rows(text), HashMap::from([(0, 2), (42, 1)]));
+    }
+
+    #[test]
+    fn class_counts_report_read_errors_but_allow_missing_labels() {
+        let images = vec!["frame.jpg".into()];
+        let missing = scan_class_counts_with("labels", &images, |_| Err(std::io::ErrorKind::NotFound.into())).unwrap();
+        assert!(missing.values().all(HashMap::is_empty));
+        let error = scan_class_counts_with("labels", &images, |_| Err(std::io::ErrorKind::PermissionDenied.into())).unwrap_err();
+        assert!(error.contains("frame.txt"));
+        let mut state = test_state();
+        state.output_dir = "labels".into();
+        state.full_image_list = images;
+        let generation = state.begin_class_counts_scan();
+        state.finish_class_counts_scan(generation, Err(error.clone()));
+        assert_eq!(state.class_counts_error.as_deref(), Some(error.as_str()));
+        assert!(!state.class_counts_loading);
+    }
+
+    #[test]
+    fn class_counts_saves_override_inflight_scans_and_reject_stale_results() {
+        let folder = CountFolder::new();
+        folder.write("frame.txt", "0 0.5 0.5 0.2 0.2\n");
+        let mut state = test_state();
+        state.output_dir = folder.output();
+        state.classes = vec![Class { id: 0, name: "a".into(), color_hex: "#000000".into(), color: (0, 0, 0), default_w: 100.0, default_h: 100.0 }];
+        state.full_image_list = vec!["frame.jpg".into()];
+        state.image_list = state.full_image_list.clone();
+        state.current_image_index = 0;
+        let generation = state.begin_class_counts_scan();
+        let old = scan_class_counts(&state.output_dir, &state.full_image_list).unwrap();
+        state.boxes = vec![BBox::new(0, 0.5, 0.5, 0.2, 0.2); 2];
+        state.boxes.push(BBox::new(-1, 0.5, 0.5, 0.2, 0.2));
+        state.boxes.push(BBox::new(99, 0.5, 0.5, 0.2, 0.2));
+        state.save_annotations();
+        state.finish_class_counts_scan(generation, Ok(old));
+        assert_eq!(state.class_counts, HashMap::from([(0, 2)]));
+        state.boxes.clear();
+        state.save_annotations();
+        assert!(state.class_counts.is_empty());
+        assert_eq!(std::fs::read_to_string(folder.0.join("frame.txt")).unwrap(), "");
+        let next = state.begin_class_counts_scan();
+        state.finish_class_counts_scan(generation, Err("stale".into()));
+        assert!(state.class_counts_loading);
+        assert!(state.class_counts_error.is_none());
+        state.finish_class_counts_scan(next, Ok(HashMap::new()));
+        assert!(state.class_counts.is_empty());
+        assert!(!state.class_counts_loading);
+    }
+
+    #[test]
+    fn class_counts_failed_save_keeps_saved_counts() {
+        let folder = CountFolder::new();
+        let mut state = test_state();
+        state.output_dir = folder.output();
+        state.full_image_list = vec!["frame.jpg".into()];
+        state.image_list = state.full_image_list.clone();
+        state.current_image_index = 0;
+        let generation = state.begin_class_counts_scan();
+        let label = folder.0.join("frame.txt");
+        state.finish_class_counts_scan(generation, Ok(HashMap::from([(label.clone(), HashMap::from([(0, 3)]))])));
+        std::fs::create_dir(&label).unwrap();
+        state.boxes.clear();
+        state.save_annotations();
+        assert_eq!(state.class_counts, HashMap::from([(0, 3)]));
+        assert!(state.class_counts_error.as_ref().unwrap().contains("Cannot save"));
+    }
+
+    #[test]
+    fn undo_redo_snapshot_semantics() {
+        let mut state = test_state();
 
         // save_state is always called BEFORE a mutation (like the real flows):
         state.save_state(); // snapshot [b0]
