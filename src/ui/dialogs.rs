@@ -147,19 +147,26 @@ impl Render for SettingsView {
         let theme = ThemeState::current(cx);
         let _ = window;
 
-        let mut tab_bar = div().flex().gap_1().px_3().pt_3();
-        for tab in TABS {
-            tab_bar = tab_bar.child(
-                widgets::tab(("settings-tab", tab as usize), tab.title(), self.tab == tab, theme)
+        let tab_bar = widgets::segmented_control(theme)
+            .mx(px(20.))
+            .mt(px(20.))
+            .child(
+                div().flex_1().flex().gap(px(2.)).children(TABS.map(|tab| {
+                    widgets::tab(
+                        ("settings-tab", tab as usize),
+                        tab.title(),
+                        self.tab == tab,
+                        theme,
+                    )
                     .on_click({
                         cx.listener(move |view: &mut SettingsView, _, _, cx| {
                             view.tab = tab;
                             view.capture_target = None;
                             cx.notify();
                         })
-                    }),
+                    })
+                })),
             );
-        }
 
         let content = match self.tab {
             SettingsTab::Keybindings => self.render_keybindings(cx),
@@ -172,30 +179,30 @@ impl Render for SettingsView {
 
         widgets::panel(theme)
             .id("settings")
-            .w(px(640.))
-            .h(px(560.))
+            .w(px(680.))
+            .h(px(580.))
             .flex_col()
             .on_key_down(cx.listener(Self::on_capture_key))
             .child(tab_bar)
             .child(
                 div()
                     .id("settings-content")
-                    .px_3()
-                    .py_2()
-                    .mt_1()
-                    .mx_3()
+                    .px(px(20.))
+                    .py(px(16.))
+                    .mt(px(14.))
+                    .mx(px(20.))
+                    .mb(px(16.))
                     .flex_1()
                     .min_h_0()
-                    .rounded_lg()
-                    .bg(theme.rgb(theme.bg_sidebar))
-                    .border_1()
-                    .border_color(theme.rgba(theme.border, 0.7))
+                    .rounded(px(10.))
+                    .bg(theme.rgba(theme.fg_muted, 0.05))
                     .overflow_y_scroll()
                     .child(content),
             )
             .child(
                 div()
-                    .p_3()
+                    .px(px(20.))
+                    .pb(px(18.))
                     .flex()
                     .justify_end()
                     .child(
@@ -262,9 +269,7 @@ impl SettingsView {
 
     fn render_class_management(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = ThemeState::current(cx);
-        let mut list = div().flex_col().gap_0p5().rounded_md().p_1().bg(theme.rgb(theme.list_bg))
-            .border_1()
-            .border_color(theme.rgba(theme.border, 0.8));
+        let mut list = div().flex_col().gap_0p5().rounded(px(8.)).p(px(4.)).bg(theme.rgba(theme.fg_muted, 0.06));
         for (i, name) in self.temp_classes.iter().enumerate() {
             let selected = self.temp_selected == Some(i);
             list = list.child(
@@ -277,8 +282,8 @@ impl SettingsView {
                     .rounded_sm()
                     .text_size(px(12.0))
                     .cursor_pointer()
-                    .when(selected, |el| el.bg(theme.rgba(theme.selection, 0.4)))
-                    .when(!selected, |el| el.hover(|s| s.bg(theme.rgba(theme.list_hover, 0.9))))
+                    .when(selected, |el| el.bg(theme.selection_bg()))
+                    .when(!selected, |el| el.hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1))))
                     .child(name.clone())
                     .on_click({
                         cx.listener(move |view: &mut SettingsView, _, _, cx| {
@@ -383,9 +388,7 @@ impl SettingsView {
             app_state(cx).classes.iter().map(|c| (c.id, c.name.clone())).collect();
 
         let make_list = || {
-            div().flex_col().rounded_md().p_1().bg(theme.rgb(theme.list_bg))
-                .border_1()
-                .border_color(theme.rgba(theme.border, 0.8))
+            div().flex_col().rounded(px(8.)).p(px(4.)).bg(theme.rgba(theme.fg_muted, 0.06))
         };
         let mut old_list = make_list();
         let mut new_list = make_list();
@@ -402,10 +405,10 @@ impl SettingsView {
                     .text_size(px(11.5))
                     .cursor_pointer()
                     .when(self.batch_old == Some(id), |el| {
-                        el.bg(theme.rgba(theme.selection, 0.4))
+                        el.bg(theme.selection_bg())
                     })
                     .when(self.batch_old != Some(id), |el| {
-                        el.hover(|s| s.bg(theme.rgba(theme.list_hover, 0.9)))
+                        el.hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1)))
                     })
                     .child(format!("{id}: {name}"))
                     .on_click(cx.listener(move |view: &mut SettingsView, _, _, cx| {
@@ -424,10 +427,10 @@ impl SettingsView {
                     .text_size(px(11.5))
                     .cursor_pointer()
                     .when(self.batch_new == Some(id), |el| {
-                        el.bg(theme.rgba(theme.selection, 0.4))
+                        el.bg(theme.selection_bg())
                     })
                     .when(self.batch_new != Some(id), |el| {
-                        el.hover(|s| s.bg(theme.rgba(theme.list_hover, 0.9)))
+                        el.hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1)))
                     })
                     .child(format!("{id}: {name}"))
                     .on_click(cx.listener(move |view: &mut SettingsView, _, _, cx| {
@@ -489,9 +492,7 @@ impl SettingsView {
 
     fn render_game_presets(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = ThemeState::current(cx);
-        let mut list = div().flex_col().rounded_md().p_1().bg(theme.rgb(theme.list_bg))
-            .border_1()
-            .border_color(theme.rgba(theme.border, 0.8));
+        let mut list = div().flex_col().rounded(px(8.)).p(px(4.)).bg(theme.rgba(theme.fg_muted, 0.06));
         for (i, name) in self.preset_files.iter().enumerate() {
             let selected = self.preset_selected == Some(i);
             list = list.child(
@@ -504,8 +505,8 @@ impl SettingsView {
                     .rounded_sm()
                     .text_size(px(11.5))
                     .cursor_pointer()
-                    .when(selected, |el| el.bg(theme.rgba(theme.selection, 0.4)))
-                    .when(!selected, |el| el.hover(|s| s.bg(theme.rgba(theme.list_hover, 0.9))))
+                    .when(selected, |el| el.bg(theme.selection_bg()))
+                    .when(!selected, |el| el.hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1))))
                     .child(name.clone())
                     .on_click(cx.listener(move |view: &mut SettingsView, _, _, cx| {
                         view.preset_selected = Some(i);
@@ -571,9 +572,7 @@ impl SettingsView {
     fn render_box_presets(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = ThemeState::current(cx);
         let presets = app_state(cx).presets.clone();
-        let mut list = div().flex_col().rounded_md().p_1().bg(theme.rgb(theme.list_bg))
-            .border_1()
-            .border_color(theme.rgba(theme.border, 0.8));
+        let mut list = div().flex_col().rounded(px(8.)).p(px(4.)).bg(theme.rgba(theme.fg_muted, 0.06));
         for slot in 1u8..=9 {
             let n = presets.get(&slot).map(|v| v.len()).unwrap_or(0);
             let label: SharedString = if n > 0 {
@@ -592,8 +591,8 @@ impl SettingsView {
                     .rounded_sm()
                     .text_size(px(11.5))
                     .cursor_pointer()
-                    .when(selected, |el| el.bg(theme.rgba(theme.selection, 0.4)))
-                    .when(!selected, |el| el.hover(|s| s.bg(theme.rgba(theme.list_hover, 0.9))))
+                    .when(selected, |el| el.bg(theme.selection_bg()))
+                    .when(!selected, |el| el.hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1))))
                     .child(label)
                     .on_click(cx.listener(move |view: &mut SettingsView, _, _, cx| {
                         view.box_slot_selected = Some(slot);
@@ -674,38 +673,74 @@ impl SettingsView {
     fn render_themes(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = ThemeState::current(cx);
         let current_name = app_state(cx).current_theme_name.clone();
-        let mut list = div().flex_col().gap_1().rounded_md().p_1().bg(theme.rgb(theme.list_bg))
-            .border_1()
-            .border_color(theme.rgba(theme.border, 0.8));
+
+        // Preview chips showing each theme's surface + accent.
+        let mut cards = Vec::new();
         for t in &THEMES {
             let name = t.name;
             let is_current = name == current_name;
-            list = list.child(
+            cards.push(
                 div()
-                    .id(("theme-row", THEMES.iter().position(|t| t.name == name).unwrap_or(0)))
-                    .px_2()
-                    .h(px(28.))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .rounded_sm()
-                    .text_size(px(12.0))
-                    .cursor_pointer()
-                    .when(is_current, |el| {
-                        el.bg(theme.rgba(theme.selection, 0.4))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .id(("theme-card", THEMES.iter().position(|t| t.name == name).unwrap_or(0)))
+                    .flex_1()
+                    .p(px(14.))
+                    .flex_col()
+                    .gap(px(12.))
+                    .rounded(px(10.))
+                    .bg(theme.rgb(theme.list_bg))
+                    .border_1()
+                    .border_color(if is_current {
+                        theme.rgb(theme.accent)
+                    } else {
+                        theme.rgba(theme.border, 0.9)
                     })
-                    .when(!is_current, |el| el.hover(|s| s.bg(theme.rgba(theme.list_hover, 0.9))))
+                    .cursor_pointer()
+                    .hover(|s| s.border_color(theme.rgb(theme.border)))
                     .child(
                         div()
-                            .w(px(3.0))
-                            .h(px(16.0))
-                            .rounded_sm()
-                            .bg(gpui::rgb(t.accent)),
+                            .h(px(56.))
+                            .rounded(px(6.))
+                            .bg(gpui::rgb(t.bg_main))
+                            .border_1()
+                            .border_color(gpui::rgba(0x00000040))
+                            .child(
+                                div()
+                                    .flex()
+                                    .h(px(18.))
+                                    .mt(px(8.))
+                                    .px(px(6.))
+                                    .gap(px(4.))
+                                    .child(div().size(px(10.)).rounded(px(3.)).bg(gpui::rgb(t.bg_hover)))
+                                    .child(div().size(px(10.)).rounded(px(3.)).bg(gpui::rgb(t.accent)))
+                                    .child(div().size(px(10.)).rounded(px(3.)).bg(gpui::rgb(t.fg_muted))),
+                            ),
                     )
-                    .child(name)
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .text_size(px(12.5))
+                                    .font_weight(if is_current {
+                                        gpui::FontWeight::SEMIBOLD
+                                    } else {
+                                        gpui::FontWeight::MEDIUM
+                                    })
+                                    .text_color(theme.rgb(theme.fg_text))
+                                    .child(name),
+                            )
+                            .when(is_current, |el| {
+                                el.child(super::icons::icon(
+                                    "check",
+                                    13.0,
+                                    theme.rgb(theme.accent),
+                                ))
+                            }),
+                    )
                     .on_click(cx.listener(move |_view: &mut SettingsView, _, _, cx| {
-                        // Live re-theme (applied immediately, like Python).
+                        // Live re-theme (applied immediately).
                         ThemeState::set(cx, name);
                         app_state_mut(cx).current_theme_name = name.to_string();
                         app_state_mut(cx).save_session();
@@ -713,17 +748,22 @@ impl SettingsView {
                     })),
             );
         }
+
         div()
             .flex_col()
-            .gap_2()
+            .gap(px(14.))
             .child(
                 div()
-                    .text_size(px(13.0))
+                    .text_size(px(13.5))
                     .font_weight(gpui::FontWeight::BOLD)
-                    .child("UI Themes"),
+                    .text_color(theme.rgb(theme.fg_highlight))
+                    .child("Appearance"),
             )
-            .child(widgets::caption("Select a theme to apply it immediately.", theme))
-            .child(list)
+            .child(widgets::caption(
+                "Select a theme to apply it immediately.",
+                theme,
+            ))
+            .child(div().flex().gap(px(10.)).children(cards))
             .into_any_element()
     }
 }

@@ -581,9 +581,13 @@ impl Render for Entry {
         let border_color = if focused {
             theme.rgb(theme.accent)
         } else {
-            theme.rgba(theme.border, 0.9)
+            gpui::transparent_black()
         };
-        let hover_border = theme.rgba(theme.border, 1.0);
+        let hover_border = if focused {
+            theme.rgb(theme.accent)
+        } else {
+            gpui::transparent_black()
+        };
 
         let mut wrapper: Stateful<gpui::Div> = div()
             .id("entry-wrapper")
@@ -608,7 +612,7 @@ impl Render for Entry {
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .h(px(30.))
             .rounded(px(6.))
-            .bg(theme.rgb(theme.entry_bg))
+            .bg(theme.rgba(theme.fg_muted, 0.07))
             .border_1()
             .border_color(border_color)
             .hover(move |s| s.border_color(hover_border))

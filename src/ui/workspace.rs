@@ -317,76 +317,81 @@ impl Workspace {
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = ThemeState::current(cx);
-        let state = app_state(cx);
-        let show_left = state.show_left_sidebar;
-        let show_filmstrip = state.show_filmstrip;
-        let show_right = state.show_right_sidebar;
-        let _ = show_filmstrip;
+        let show_left = app_state(cx).show_left_sidebar;
+        let show_filmstrip = app_state(cx).show_filmstrip;
+        let show_right = app_state(cx).show_right_sidebar;
 
         div()
             .id("toolbar")
-            .h(px(42.))
+            .h(px(46.))
             .flex_none()
             .w_full()
             .flex()
             .items_center()
-            .gap_1()
-            .px_2()
+            .px(px(10.))
             .bg(theme.rgb(theme.bg_elevated))
             .border_b_1()
-            .border_color(theme.rgba(theme.border, 0.7))
-            .child(widgets::icon_button("tb-project", "🗂", "Project", theme).on_click({
+            .border_color(theme.rgba(theme.border, 0.8))
+            .child(widgets::icon_button("tb-project", "panel-left", show_left, theme).on_click(
                 cx.listener(move |_ws: &mut Workspace, _, _, cx| {
                     let show = app_state(cx).show_left_sidebar;
                     app_state_mut(cx).show_left_sidebar = !show;
                     cx.notify();
-                })
-            }).when(!show_left, |el| el))
-            .child(widgets::icon_button("tb-undo", "↶", "Undo", theme).on_click(cx.listener(
+                }),
+            ))
+            .child(widgets::toolbar_divider(theme))
+            .child(widgets::icon_button("tb-undo", "undo", false, theme).on_click(cx.listener(
                 |ws: &mut Workspace, _, window, cx| ws.undo_impl(window, cx),
             )))
-            .child(widgets::icon_button("tb-redo", "↷", "Redo", theme).on_click(cx.listener(
+            .child(widgets::icon_button("tb-redo", "redo", false, theme).on_click(cx.listener(
                 |ws: &mut Workspace, _, window, cx| ws.redo_impl(window, cx),
             )))
-            .child(widgets::icon_button("tb-validate", "✓", "Validate", theme).on_click(
+            .child(widgets::icon_button("tb-validate", "check-circle", false, theme).on_click(
                 cx.listener(|ws: &mut Workspace, _, window, cx| ws.show_validation(window, cx)),
             ))
             .child(
                 div()
                     .id("tb-indicator")
-                    .px_2()
-                    .h(px(26.))
+                    .ml(px(2.))
+                    .px(px(8.))
+                    .h(px(22.))
                     .flex()
                     .items_center()
-                    .rounded_md()
-                    .text_size(px(11.5))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(self.indicator_color(theme))
+                    .gap(px(6.))
+                    .rounded(px(6.))
+                    .bg(theme.rgba(theme.fg_muted, 0.1))
+                    .text_size(px(11.))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.rgb(theme.fg_muted))
+                    .child(
+                        div()
+                            .size(px(6.))
+                            .rounded(px(3.))
+                            .bg(self.indicator_color(theme)),
+                    )
                     .child(self.toolbar_indicator()),
             )
             .child(div().flex_1())
-            .child(widgets::icon_button("tb-keys", "⌨", "Keys", theme).on_click(cx.listener(
-                |ws: &mut Workspace, _, _, cx| {
+            .child(widgets::icon_button("tb-keys", "keyboard", self.help_visible, theme).on_click(
+                cx.listener(|ws: &mut Workspace, _, _, cx| {
                     ws.help_visible = !ws.help_visible;
                     cx.notify();
-                }
-            )))
-            .child(widgets::icon_button("tb-filmstrip", "🎞", "Filmstrip", theme).on_click(
+                }),
+            ))
+            .child(widgets::icon_button("tb-filmstrip", "film", show_filmstrip, theme).on_click(
                 cx.listener(|_ws: &mut Workspace, _, _, cx| {
                     let show = app_state(cx).show_filmstrip;
                     app_state_mut(cx).show_filmstrip = !show;
                     cx.notify();
                 }),
             ))
-            .child(widgets::icon_button("tb-boxes", "📜", "Box List", theme).on_click(
-                cx.listener(move |ws: &mut Workspace, _, _, cx| {
-                    let _ = ws;
+            .child(widgets::icon_button("tb-boxes", "list", show_right, theme).on_click(
+                cx.listener(move |_ws: &mut Workspace, _, _, cx| {
                     let show = app_state(cx).show_right_sidebar;
                     app_state_mut(cx).show_right_sidebar = !show;
                     cx.notify();
                 }),
             ))
-            .when(!show_right, |el| el)
             .into_any_element()
     }
 
@@ -395,25 +400,25 @@ impl Workspace {
         let coords = self.canvas.read(cx).coords_text(app_state(cx));
         div()
             .id("statusbar")
-            .h(px(24.))
+            .h(px(28.))
             .flex_none()
             .w_full()
             .flex()
             .items_center()
             .justify_between()
-            .px_3()
+            .px(px(12.))
             .bg(theme.rgb(theme.bg_elevated))
             .border_t_1()
-            .border_color(theme.rgba(theme.border, 0.7))
+            .border_color(theme.rgba(theme.border, 0.8))
             .child(
                 div()
-                    .text_size(px(11.0))
+                    .text_size(px(11.))
                     .text_color(theme.rgb(theme.fg_muted))
                     .child(self.status.clone()),
             )
             .child(
                 div()
-                    .text_size(px(11.0))
+                    .text_size(px(11.))
                     .text_color(theme.rgb(theme.fg_muted))
                     .child(coords),
             )
@@ -422,14 +427,11 @@ impl Workspace {
 
     fn render_left_sidebar(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = ThemeState::current(cx);
-        let state = app_state(cx);
-        let (_annotated, _total) = state.get_annotated_count();
 
-        let tabs = div()
-            .flex()
-            .gap_1()
-            .px_2()
-            .pt_2()
+        let tabs = widgets::segmented_control(theme)
+            .mx(px(12.))
+            .mt(px(12.))
+            .mb(px(10.))
             .child(widgets::tab(
                 "tab-project",
                 "Project",
@@ -456,13 +458,14 @@ impl Workspace {
 
         div()
             .id("left-sidebar")
-            .w(px(280.))
+            .w(px(292.))
             .flex_none()
             .h_full()
             .flex_col()
             .bg(theme.rgb(theme.bg_sidebar))
             .border_r_1()
-            .border_color(theme.rgba(theme.border, 0.7))
+            .border_color(theme.rgba(theme.border, 0.8))
+            .shadow_md()
             .child(tabs)
             .child(body)
             .into_any_element()
@@ -470,7 +473,7 @@ impl Workspace {
 
     fn render_project_tab(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = ThemeState::current(cx);
-        let (dir_label, pct, progress_text) = {
+        let (dir_label, pct, progress_text): (SharedString, f32, SharedString) = {
             let state = app_state(cx);
             let dir_label: SharedString = if state.image_dir.is_empty() {
                 "No directory selected".into()
@@ -498,30 +501,61 @@ impl Workspace {
             cx.notify();
         })));
         let directory_content = div()
-            .px_2()
-            .pb_2()
+            .px(px(12.))
+            .pb(px(20.))
             .flex_col()
-            .gap_1p5()
+            .gap(px(8.))
             .child(
-                widgets::button("btn-open-images", "Open Images", BtnVariant::Accent, theme)
-                    .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
-                        ws.open_images_dialog(window, cx)
-                    })),
+                widgets::button_with_icon(
+                    "btn-open-images",
+                    "Open Images",
+                    Some("folder-open"),
+                    BtnVariant::Accent,
+                    theme,
+                )
+                .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
+                    ws.open_images_dialog(window, cx)
+                })),
             )
             .child(
-                widgets::button("btn-set-output", "Set Output Dir", BtnVariant::Default, theme)
-                    .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
-                        ws.set_output_dir_dialog(window, cx)
-                    })),
+                widgets::button_with_icon(
+                    "btn-set-output",
+                    "Set Output Directory",
+                    Some("database"),
+                    BtnVariant::Default,
+                    theme,
+                )
+                .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
+                    ws.set_output_dir_dialog(window, cx)
+                })),
             )
             .child(
                 div()
-                    .text_size(px(11.0))
-                    .text_color(theme.rgb(theme.fg_muted))
-                    .line_height(px(15.0))
+                    .mt(px(2.))
+                    .mb(px(12.))
+                    .px(px(2.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .text_size(px(11.))
+                    .text_color(theme.rgba(theme.fg_text, 0.5))
+                    .line_height(px(16.0))
+                    .child(super::icons::icon(
+                        "folder-open",
+                        12.0,
+                        theme.rgba(theme.fg_text, 0.4),
+                    ))
                     .child(dir_label),
             )
-            .child(widgets::caption("Recent Projects:", theme))
+            .child(
+                div()
+                    .mt(px(14.))
+                    .mb(px(6.))
+                    .text_size(px(10.5))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(theme.rgba(theme.fg_text, 0.55))
+                    .child("RECENT PROJECTS"),
+            )
             .child(self.render_recents_dropdown(cx));
 
         // Files section
@@ -535,34 +569,38 @@ impl Workspace {
             cx.notify();
         })));
         let file_rows = self.render_file_list(cx);
+        let visible_files = app_state(cx).image_list.len() as f32;
+        let list_height = (visible_files * 28.0 + 8.0).min(430.0);
 
         let files_content = div()
-            .px_2()
-            .pb_2()
+            .px(px(12.))
+            .pb(px(20.))
             .flex_col()
-            .gap_1p5()
-            .child(self.render_filter_dropdown(cx))
+            .gap(px(8.))
             .child(
                 div()
                     .flex()
-                    .gap_1p5()
+                    .gap(px(6.))
+                    .items_center()
+                    .child(div().flex_1().child(self.render_filter_dropdown(cx)))
                     .child(
-                        widgets::button("btn-filter", "Filter", BtnVariant::Default, theme)
+                        widgets::icon_button("btn-filter", "filter", self.filter_class_id.is_some(), theme)
                             .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
                                 ws.apply_image_filter(window, cx)
                             })),
                     )
                     .child(
-                        widgets::button("btn-clear-filter", "Clear", BtnVariant::Default, theme)
-                            .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
+                        widgets::icon_button("btn-clear-filter", "x", false, theme).on_click(
+                            cx.listener(|ws: &mut Workspace, _, window, cx| {
                                 ws.clear_image_filter(window, cx)
-                            })),
+                            }),
+                        ),
                     ),
             )
             .child(
                 widgets::checkbox(
                     "chk-unannotated",
-                    "Show Unannotated Only (U)",
+                    "Show Unannotated Only",
                     app_state(cx).unannotated_filter_active,
                     theme,
                 )
@@ -570,29 +608,40 @@ impl Workspace {
                     ws.toggle_unannotated_filter(window, cx)
                 })),
             )
-            .child(div().h(px(300.)).child(file_rows));
+            .child(div().h(px(list_height)).child(file_rows));
 
         // Progress pinned at the bottom
         let progress = div()
-            .px_2()
-            .pb_2()
+            .px(px(12.))
+            .pt(px(10.))
+            .pb(px(12.))
             .flex_none()
             .flex_col()
-            .gap_1()
-            .child(widgets::section_label("PROGRESS", theme))
-            .child(widgets::progress_bar(
-                "progress-bar",
-                pct,
-                Some(progress_text),
-                theme,
-            ));
+            .gap(px(8.))
+            .border_t_1()
+            .border_color(theme.rgba(theme.border, 0.7))
+            .child(
+                div()
+                    .flex()
+                    .items_baseline()
+                    .justify_between()
+                    .child(widgets::section_label("PROGRESS", theme))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(theme.rgb(theme.fg_muted))
+                            .child(progress_text),
+                    ),
+            )
+            .child(widgets::progress_bar("progress-bar", pct, theme));
 
         div()
             .id("project-tab-scroll")
             .flex_1()
             .min_h_0()
             .flex_col()
-            .gap_1()
+            .gap(px(12.))
+            .pt(px(2.))
             .overflow_y_scroll()
             .child(directory)
             .when(self.collapse_dirs, |el| el.child(directory_content))
@@ -617,12 +666,37 @@ impl Workspace {
             }
         };
 
+        if recents.is_empty() {
+            return div()
+                .id("recents-dd")
+                .child(widgets::caption("No recent projects yet", theme))
+                .into_any_element();
+        }
+
+        let chevron = if self.recents_open { "chevron-down" } else { "chevron-right" };
+        let dd_arrow = super::icons::icon(chevron, 13.0, theme.rgb(theme.fg_muted));
+
         let mut dd = div()
             .id("recents-dd")
             .relative()
             .w_full()
             .child(
-                widgets::button("recents-btn", selected_label, BtnVariant::Default, theme)
+                div()
+                    .id("recents-btn")
+                    .w_full()
+                    .h(px(32.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(px(8.))
+                    .rounded(px(7.))
+                    .bg(theme.rgba(theme.fg_muted, 0.07))
+                    .text_size(px(12.))
+                    .text_color(theme.rgb(theme.fg_text))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.16)))
+                    .child(selected_label)
+                    .child(dd_arrow)
                     .on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
                         ws.recents_open = !ws.recents_open;
                         cx.notify();
@@ -635,20 +709,22 @@ impl Workspace {
                 rows.push(
                     div()
                         .id(("recent", i))
-                        .px_2()
-                        .h(px(24.))
+                        .px(px(10.))
+                        .h(px(30.))
                         .flex()
                         .items_center()
-                        .rounded_sm()
-                        .text_size(px(11.5))
+                        .gap(px(8.))
+                        .rounded(px(6.))
+                        .text_size(px(12.))
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme.rgba(theme.list_hover, 0.9)))
+                        .hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1)))
+                        .child(super::icons::icon("history", 13.0, theme.rgb(theme.fg_muted)))
                         .child(p.name.clone())
                         .on_click({
-                            cx.listener(move |ws: &mut Workspace, _, _, cx| {
+                            cx.listener(move |ws: &mut Workspace, _, window, cx| {
                                 ws.selected_recent = Some(i);
                                 ws.recents_open = false;
-                                cx.notify();
+                                ws.load_recent_project(window, cx);
                             })
                         })
                         .into_any_element(),
@@ -658,16 +734,16 @@ impl Workspace {
                 div()
                     .id("recents-popover")
                     .absolute()
-                    .top(px(32.))
+                    .top(px(34.))
                     .left_0()
                     .right_0()
-                    .rounded_md()
+                    .rounded(px(10.))
                     .bg(theme.rgb(theme.bg_elevated))
                     .border_1()
                     .border_color(theme.rgba(theme.border, 1.0))
-                    .shadow_md()
-                    .py_1()
-                    .max_h(px(180.))
+                    .shadow_lg()
+                    .p(px(4.))
+                    .max_h(px(200.))
                     .overflow_y_scroll()
                     .on_mouse_down_out(cx.listener(|ws: &mut Workspace, _, _, cx| {
                         ws.recents_open = false;
@@ -677,18 +753,7 @@ impl Workspace {
             );
         }
 
-        dd.child(
-            widgets::button(
-                "btn-load-recent",
-                "Load Selected Project",
-                BtnVariant::Default,
-                theme,
-            )
-            .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
-                ws.load_recent_project(window, cx)
-            })),
-        )
-        .into_any_element()
+        dd.into_any_element()
     }
 
     fn render_filter_dropdown(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -702,13 +767,30 @@ impl Workspace {
             None => "Filter by class…".into(),
         };
 
+        let chevron = if self.filter_open { "chevron-down" } else { "chevron-right" };
+        let dd_arrow = super::icons::icon(chevron, 13.0, theme.rgb(theme.fg_muted));
+
         let mut dd = div().id("filter-dd").relative().w_full().child(
-            widgets::button("filter-btn", label, BtnVariant::Default, theme).on_click(
-                cx.listener(|ws: &mut Workspace, _, _, cx| {
+            div()
+                .id("filter-btn")
+                .w_full()
+                .h(px(32.))
+                .flex()
+                .items_center()
+                .justify_between()
+                .px(px(8.))
+                .rounded(px(7.))
+                .bg(theme.rgba(theme.fg_muted, 0.07))
+                .text_size(px(12.))
+                .text_color(theme.rgb(theme.fg_text))
+                .cursor_pointer()
+                .hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.16)))
+                .child(label)
+                .child(dd_arrow)
+                .on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
                     ws.filter_open = !ws.filter_open;
                     cx.notify();
-                }),
-            ),
+                })),
         );
 
         if self.filter_open {
@@ -718,15 +800,15 @@ impl Workspace {
                 rows.push(
                     div()
                         .id(("filter-class", id as usize))
-                        .px_2()
-                        .h(px(24.))
+                        .px(px(10.))
+                        .h(px(30.))
                         .flex()
                         .items_center()
-                        .gap_2()
-                        .rounded_sm()
-                        .text_size(px(11.5))
+                        .gap(px(8.))
+                        .rounded(px(6.))
+                        .text_size(px(12.))
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme.rgba(theme.list_hover, 0.9)))
+                        .hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1)))
                         .child(widgets::color_swatch(c.color, px(10.0), theme))
                         .child(format!("{}: {}", c.id, c.name))
                         .on_click(cx.listener(move |ws: &mut Workspace, _, _, cx| {
@@ -741,16 +823,16 @@ impl Workspace {
                 div()
                     .id("filter-popover")
                     .absolute()
-                    .top(px(32.))
+                    .top(px(34.))
                     .left_0()
                     .right_0()
-                    .rounded_md()
+                    .rounded(px(10.))
                     .bg(theme.rgb(theme.bg_elevated))
                     .border_1()
                     .border_color(theme.rgba(theme.border, 1.0))
-                    .shadow_md()
-                    .py_1()
-                    .max_h(px(220.))
+                    .shadow_lg()
+                    .p(px(4.))
+                    .max_h(px(240.))
                     .overflow_y_scroll()
                     .on_mouse_down_out(cx.listener(|ws: &mut Workspace, _, _, cx| {
                         ws.filter_open = false;
@@ -784,20 +866,20 @@ impl Workspace {
                 rows.push(
                     div()
                         .id(("file-row", ix))
-                        .pl_2()
-                        .pr_2()
-                        .h(px(24.))
+                        .px(px(10.))
+                        .h(px(28.))
                         .flex()
                         .items_center()
-                        .rounded_sm()
-                        .text_size(px(11.5))
+                        .mx(px(4.))
+                        .rounded(px(6.))
+                        .text_size(px(12.))
                         .cursor_pointer()
                         .when(is_current, |el| {
-                            el.bg(theme.rgba(theme.selection, 0.35))
+                            el.bg(theme.selection_bg())
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(theme.rgb(theme.fg_highlight))
                         })
-                        .when(!is_current, |el| el.hover(|s| s.bg(theme.rgba(theme.list_hover, 0.9))))
+                        .when(!is_current, |el| el.hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1))))
                         .child(filenames[ix].clone())
                         .on_click({
                             let on_click = std::rc::Rc::clone(&on_click);
@@ -811,19 +893,13 @@ impl Workspace {
         .track_scroll(self.file_list_scroll.clone())
         .flex_1()
         .min_h_0()
-        .rounded_md()
-        .bg(theme.rgb(theme.list_bg))
-        .border_1()
-        .border_color(theme.rgba(theme.border, 0.8))
         .into_any_element()
     }
 
     fn render_classes_tab(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = ThemeState::current(cx);
-        let state = app_state(cx);
-        let show_labels = state.show_labels;
-        let auto_save = state.auto_save;
-        let _ = (show_labels, auto_save);
+        let show_labels = app_state(cx).show_labels;
+        let auto_save = app_state(cx).auto_save;
 
         let classes_header = div().child(widgets::collapsible_header(
             "col-classes",
@@ -836,10 +912,10 @@ impl Workspace {
         })));
 
         let classes_content = div()
-            .px_2()
-            .pb_2()
+            .px(px(12.))
+            .pb(px(16.))
             .flex_col()
-            .gap_1p5()
+            .gap(px(8.))
             .child(self.class_search.clone())
             .child(self.render_class_list(cx));
 
@@ -853,35 +929,62 @@ impl Workspace {
             cx.notify();
         })));
 
+        let quiet_button = |id: &'static str,
+                            label: &'static str,
+                            icon_name: &'static str,
+                            theme: &crate::ui::theme::Theme|
+         -> gpui::Stateful<gpui::Div> {
+            let fg = theme.rgb(theme.fg_text);
+            let icon_fg = theme.rgb(theme.fg_muted);
+            let hover = theme.rgba(theme.fg_muted, 0.1);
+            div()
+                .id(id)
+                .w_full()
+                .h(px(30.))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .px(px(8.))
+                .mx(px(-8.))
+                .rounded(px(6.))
+                .text_size(px(12.))
+                .text_color(fg)
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .child(super::icons::icon(icon_name, 14.0, icon_fg))
+                .child(label)
+        };
+
         let tools_content = div()
-            .px_2()
-            .pb_2()
+            .px(px(12.))
+            .pb(px(16.))
             .flex_col()
-            .gap_1p5()
+            .gap(px(2.))
             .child(
-                widgets::button("btn-copy", "Copy Boxes (Ctrl+C)", BtnVariant::Default, theme)
-                    .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
-                        ws.copy_boxes_impl(window, cx)
-                    })),
+                quiet_button("btn-copy", "Copy Boxes", "copy", theme).on_click(cx.listener(
+                    |ws: &mut Workspace, _, window, cx| ws.copy_boxes_impl(window, cx),
+                )),
             )
             .child(
-                widgets::button("btn-paste", "Paste Boxes (Ctrl+V)", BtnVariant::Default, theme)
-                    .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
-                        ws.paste_boxes_impl(window, cx)
-                    })),
+                quiet_button("btn-paste", "Paste Boxes", "clipboard", theme).on_click(cx.listener(
+                    |ws: &mut Workspace, _, window, cx| ws.paste_boxes_impl(window, cx),
+                )),
             )
             .child(
-                widgets::button("btn-preview-clip", "Preview Clipboard", BtnVariant::Default, theme)
-                    .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
+                quiet_button("btn-preview-clip", "Preview Clipboard", "eye", theme).on_click(
+                    cx.listener(|ws: &mut Workspace, _, window, cx| {
                         ws.toggle_clipboard_preview(window, cx)
-                    })),
+                    }),
+                ),
             )
             .child(
-                widgets::button("btn-duplicate", "Duplicate Boxes (Ctrl+D)", BtnVariant::Default, theme)
-                    .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
+                quiet_button("btn-duplicate", "Duplicate Boxes", "layers", theme).on_click(
+                    cx.listener(|ws: &mut Workspace, _, window, cx| {
                         ws.duplicate_boxes_impl(window, cx)
-                    })),
+                    }),
+                ),
             )
+            .child(div().h(px(6.)))
             .child(
                 widgets::checkbox("chk-autosave", "Auto Save", auto_save, theme).on_click(
                     cx.listener(|_ws: &mut Workspace, _, _, cx| {
@@ -905,7 +1008,8 @@ impl Workspace {
             .flex_1()
             .min_h_0()
             .flex_col()
-            .gap_1()
+            .gap(px(12.))
+            .pt(px(2.))
             .child(classes_header)
             .when(self.collapse_classes, |el| el.child(classes_content))
             .child(tools_header)
@@ -913,14 +1017,20 @@ impl Workspace {
             .child(div().flex_1())
             .child(
                 div()
-                    .px_2()
-                    .pb_3()
+                    .px(px(12.))
+                    .pb(px(12.))
                     .child(
-                        widgets::button("btn-settings", "Settings", BtnVariant::Default, theme)
-                            .w_full()
-                            .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
-                                ws.open_settings(window, cx)
-                            })),
+                        widgets::button_with_icon(
+                            "btn-settings",
+                            "Settings",
+                            Some("sliders"),
+                            BtnVariant::Default,
+                            theme,
+                        )
+                        .w_full()
+                        .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
+                            ws.open_settings(window, cx)
+                        })),
                     ),
             )
             .into_any_element()
@@ -956,28 +1066,29 @@ impl Workspace {
                 let ix = *ix;
                 let is_current = current_class == ix as i64;
                 let label: SharedString = if *n > 0 {
-                    format!("  {}: {}   ({})", _id, name, n).into()
+                    format!("{}: {}   ({})", _id, name, n).into()
                 } else {
-                    format!("  {}: {}", _id, name).into()
+                    format!("{}: {}", _id, name).into()
                 };
                 rows.push(
                     div()
                         .id(("class-row", rix))
-                        .pl_1()
-                        .pr_2()
-                        .h(px(24.))
+                        .px(px(8.))
+                        .h(px(30.))
                         .flex()
                         .items_center()
-                        .gap_1()
-                        .rounded_sm()
-                        .text_size(px(11.5))
+                        .gap(px(8.))
+                        .mx(px(4.))
+                        .rounded(px(6.))
+                        .text_size(px(12.))
                         .cursor_pointer()
                         .when(is_current, |el| {
-                            el.bg(theme.rgba(theme.selection, 0.35))
+                            el.bg(theme.selection_bg())
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(theme.rgb(theme.fg_highlight))
                         })
-                        .when(!is_current, |el| el.hover(|s| s.bg(theme.rgba(theme.list_hover, 0.9))))
-                        .child(widgets::color_swatch(*color, px(12.0), theme))
+                        .when(!is_current, |el| el.hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1))))
+                        .child(widgets::color_swatch(*color, px(11.0), theme))
                         .child(label)
                         .on_click({
                             let on_click = std::rc::Rc::clone(&on_click);
@@ -989,11 +1100,7 @@ impl Workspace {
             rows
         })
         .track_scroll(self.class_list_scroll.clone())
-        .h(px(320.))
-        .rounded_md()
-        .bg(theme.rgb(theme.list_bg))
-        .border_1()
-        .border_color(theme.rgba(theme.border, 0.8))
+        .h(px(400.))
         .into_any_element()
     }
 
@@ -1061,19 +1168,20 @@ impl Workspace {
                 rows.push(
                     div()
                         .id(("box-row", ix))
-                        .pl_2()
-                        .pr_2()
-                        .h(px(24.))
+                        .px(px(10.))
+                        .h(px(28.))
                         .flex()
                         .items_center()
-                        .rounded_sm()
-                        .text_size(px(11.5))
+                        .mx(px(4.))
+                        .rounded(px(6.))
+                        .text_size(px(12.))
                         .cursor_pointer()
                         .when(is_selected, |el| {
-                            el.bg(theme.rgb(theme.selection))
+                            el.bg(theme.selection_bg())
+                                .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(theme.rgb(theme.fg_highlight))
                         })
-                        .when(!is_selected, |el| el.hover(|s| s.bg(theme.rgba(theme.list_hover, 0.9))))
+                        .when(!is_selected, |el| el.hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1))))
                         .child(format!("{}: {}", i, name))
                         .on_mouse_down(
                             MouseButton::Left,
@@ -1095,25 +1203,40 @@ impl Workspace {
         })
         .track_scroll(self.box_list_scroll.clone())
         .flex_1()
-        .min_h_0()
-        .rounded_md()
-        .bg(theme.rgb(theme.list_bg))
-        .border_1()
-        .border_color(theme.rgba(theme.border, 0.8));
+        .min_h_0();
 
         div()
             .id("right-sidebar")
-            .w(px(250.))
+            .w(px(256.))
             .flex_none()
             .h_full()
-            .flex_col()
-            .gap_1()
-            .p_2()
+            .relative()
+            .p(px(12.))
             .bg(theme.rgb(theme.bg_sidebar))
             .border_l_1()
-            .border_color(theme.rgba(theme.border, 0.7))
-            .child(widgets::section_label("BOX LABELS", theme))
-            .child(list)
+            .border_color(theme.rgba(theme.border, 0.8))
+            .shadow_md()
+            .child(
+                // List fills the sidebar; header overlays the top band.
+                div().h_full().pt(px(26.)).child(list),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(10.))
+                    .left(px(12.))
+                    .right(px(12.))
+                    .flex()
+                    .items_baseline()
+                    .justify_between()
+                    .child(widgets::section_label("BOXES", theme))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(theme.rgb(theme.fg_muted))
+                            .child(format!("{count}")),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -1166,32 +1289,31 @@ impl Workspace {
 
         let mut columns: Vec<gpui::AnyElement> = Vec::new();
         for col_sections in [&sections[0..3.min(sections.len())], &sections[3.min(sections.len())..]] {
-            let mut col = div().flex_col().gap_2();
+            let mut col = div().flex_col().gap(px(20.));
             for (name, rows) in col_sections.iter() {
-                let mut section = div().flex_col().gap_1();
+                let mut section = div().flex_col().gap(px(6.));
                 section = section.child(
                     div()
-                        .text_size(px(11.0))
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .text_color(theme.rgb(theme.button_highlight))
+                        .text_size(px(10.5))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme.rgb(theme.fg_muted))
                         .child(*name),
                 );
                 for (key, desc) in rows.iter() {
                     section = section.child(
                         div()
                             .flex()
-                            .gap_2()
+                            .items_center()
+                            .gap(px(10.))
                             .child(
                                 div()
-                                    .w(px(120.))
-                                    .text_size(px(11.0))
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(theme.rgb(theme.fg_highlight))
-                                    .child(*key),
+                                    .w(px(128.))
+                                    .flex_none()
+                                    .child(widgets::kbd(*key, theme)),
                             )
                             .child(
                                 div()
-                                    .text_size(px(11.0))
+                                    .text_size(px(12.))
                                     .text_color(theme.rgb(theme.fg_text))
                                     .child(*desc),
                             ),
@@ -1204,22 +1326,37 @@ impl Workspace {
 
         widgets::panel(theme)
             .id("help-overlay")
-            .w(px(640.))
-            .p_5()
+            .w(px(680.))
+            .p(px(28.))
             .flex_col()
-            .gap_4()
+            .gap(px(24.))
             .child(
                 div()
-                    .text_size(px(15.0))
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .text_color(theme.rgb(theme.fg_highlight))
-                    .child("⌨  KEYBOARD SHORTCUTS"),
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(super::icons::icon(
+                        "keyboard",
+                        18.0,
+                        theme.rgb(theme.fg_muted),
+                    ))
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(theme.rgb(theme.fg_highlight))
+                            .child("Keyboard Shortcuts"),
+                    ),
             )
-            .child(div().flex().gap_6().children(columns))
-            .child(widgets::caption(
-                "Press ? or click 'Keys' button to close",
-                theme,
-            ))
+            .child(div().flex().gap(px(32.)).children(columns))
+            .child(
+                div().flex().items_center().gap(px(8.)).child(widgets::kbd("?", theme)).child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(theme.rgb(theme.fg_muted))
+                        .child("or the toolbar keys button closes this overlay"),
+                ),
+            )
             .into_any_element()
     }
 
@@ -1268,21 +1405,21 @@ impl Workspace {
                 let _ = cancel;
                 widgets::panel(theme)
                     .id("modal-confirm")
-                    .w(px(420.))
-                    .p_4()
+                    .w(px(440.))
+                    .p(px(24.))
                     .flex_col()
-                    .gap_3()
+                    .gap(px(16.))
                     .child(
                         div()
-                            .text_size(px(13.0))
+                            .text_size(px(14.0))
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(theme.rgb(theme.fg_highlight))
                             .child(title),
                     )
                     .child(
                         div()
-                            .text_size(px(12.0))
-                            .line_height(px(17.0))
+                            .text_size(px(12.5))
+                            .line_height(px(19.0))
                             .text_color(theme.rgb(theme.fg_text))
                             .child(message),
                     )
@@ -1290,7 +1427,8 @@ impl Workspace {
                         div()
                             .flex()
                             .justify_end()
-                            .gap_2()
+                            .gap(px(8.))
+                            .mt(px(4.))
                             .child(
                                 widgets::button("confirm-no", "Cancel", BtnVariant::Default, theme)
                                     .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
@@ -1306,7 +1444,7 @@ impl Workspace {
                                     })),
                             )
                             .child(
-                                widgets::button("confirm-yes", "Yes", BtnVariant::Accent, theme)
+                                widgets::button("confirm-yes", "Confirm", BtnVariant::Accent, theme)
                                     .on_click(run),
                             ),
                     )
@@ -1314,21 +1452,21 @@ impl Workspace {
             }
             Modal::Alert { title, message } => widgets::panel(theme)
                 .id("modal-alert")
-                .w(px(420.))
-                .p_4()
+                .w(px(440.))
+                .p(px(24.))
                 .flex_col()
-                .gap_3()
+                .gap(px(16.))
                 .child(
                     div()
-                        .text_size(px(13.0))
+                        .text_size(px(14.0))
                         .font_weight(gpui::FontWeight::BOLD)
                         .text_color(theme.rgb(theme.fg_highlight))
                         .child(title.clone()),
                 )
                 .child(
                     div()
-                        .text_size(px(12.0))
-                        .line_height(px(17.0))
+                        .text_size(px(12.5))
+                        .line_height(px(19.0))
                         .text_color(theme.rgb(theme.fg_text))
                         .child(message.clone()),
                 )
@@ -1336,6 +1474,7 @@ impl Workspace {
                     div()
                         .flex()
                         .justify_end()
+                        .mt(px(4.))
                         .child(
                             widgets::button("alert-ok", "OK", BtnVariant::Accent, theme).on_click(
                                 cx.listener(|ws: &mut Workspace, _, _, cx| {
@@ -1351,29 +1490,24 @@ impl Workspace {
                 let pct = if *total > 0 { *current as f32 / *total as f32 } else { 0.0 };
                 widgets::panel(theme)
                     .id("modal-progress")
-                    .w(px(420.))
-                    .p_4()
+                    .w(px(440.))
+                    .p(px(24.))
                     .flex_col()
-                    .gap_3()
+                    .gap(px(14.))
                     .child(
                         div()
-                            .text_size(px(13.0))
+                            .text_size(px(14.0))
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(theme.rgb(theme.fg_highlight))
                             .child(title.clone()),
                     )
                     .child(
                         div()
-                            .text_size(px(11.5))
+                            .text_size(px(12.))
                             .text_color(theme.rgb(theme.fg_muted))
                             .child(label.clone()),
                     )
-                    .child(widgets::progress_bar(
-                        "modal-progress-bar",
-                        pct,
-                        Some(format!("{}%", (pct * 100.0) as i32).into()),
-                        theme,
-                    ))
+                    .child(widgets::progress_bar("modal-progress-bar", pct, theme))
                     .into_any_element()
             }
             Modal::EditClass => {
@@ -1387,15 +1521,15 @@ impl Workspace {
                     rows.push(
                         div()
                             .id(("edit-class-row", id as usize))
-                            .pl_2()
-                            .pr_2()
-                            .h(px(28.))
+                            .px(px(10.))
+                            .h(px(30.))
+                            .mx(px(4.))
                             .flex()
                             .items_center()
-                            .rounded_sm()
-                            .text_size(px(12.0))
+                            .rounded(px(6.))
+                            .text_size(px(12.5))
                             .cursor_pointer()
-                            .hover(|s| s.bg(theme.rgba(theme.list_hover, 0.9)))
+                            .hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1)))
                             .child(name)
                             .on_click(cx.listener(move |ws: &mut Workspace, _, _, cx| {
                                 ws.apply_edit_class(id, cx);
@@ -1405,16 +1539,17 @@ impl Workspace {
                 }
                 widgets::panel(theme)
                     .id("modal-edit-class")
-                    .w(px(300.))
-                    .h(px(420.))
-                    .p_3()
+                    .w(px(320.))
+                    .h(px(440.))
+                    .p(px(16.))
                     .flex_col()
-                    .gap_2()
+                    .gap(px(10.))
                     .child(
                         div()
-                            .text_size(px(12.0))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(theme.rgb(theme.fg_highlight))
+                            .px(px(4.))
+                            .text_size(px(10.5))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(theme.rgb(theme.fg_muted))
                             .child("SELECT CLASS"),
                     )
                     .child(
@@ -1423,7 +1558,7 @@ impl Workspace {
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()
-                            .rounded_md()
+                            .rounded(px(8.))
                             .bg(theme.rgb(theme.list_bg))
                             .border_1()
                             .border_color(theme.rgba(theme.border, 0.8))
@@ -1443,7 +1578,7 @@ impl Workspace {
             .flex()
             .items_center()
             .justify_center()
-            .bg(gpui::black().opacity(0.5))
+            .bg(gpui::black().opacity(0.45))
             .on_mouse_down(MouseButton::Left, backdrop_click)
             .child(panel)
             .into_any_element()
@@ -1454,37 +1589,26 @@ impl Workspace {
         let (errors, warnings, infos) = crate::validation::summarize(&self.validation_issues);
         let mut rows = Vec::new();
         for (i, issue) in self.validation_issues.iter().enumerate() {
-            let icon = match issue.severity {
-                crate::validation::Severity::Error => "❌",
-                crate::validation::Severity::Warning => "⚠",
-                crate::validation::Severity::Info => "ℹ",
+            let (icon_name, color) = match issue.severity {
+                crate::validation::Severity::Error => ("error", theme.rgb(theme.error)),
+                crate::validation::Severity::Warning => ("warning", theme.rgb(theme.warning)),
+                crate::validation::Severity::Info => ("info", theme.rgb(theme.info)),
             };
             let box_index = issue.box_index;
             rows.push(
                 div()
                     .id(("validation-row", i))
-                    .pl_2()
-                    .pr_2()
-                    .h(px(24.))
+                    .px(px(8.))
+                    .h(px(30.))
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .rounded_sm()
-                    .text_size(px(11.5))
+                    .gap(px(8.))
+                    .mx(px(4.))
+                    .rounded(px(6.))
+                    .text_size(px(12.))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.rgba(theme.list_hover, 0.9)))
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_color(if issue.severity == crate::validation::Severity::Error {
-                                theme.rgb(theme.error)
-                            } else if issue.severity == crate::validation::Severity::Warning {
-                                theme.rgb(theme.warning)
-                            } else {
-                                theme.rgb(theme.info)
-                            })
-                            .child(icon),
-                    )
+                    .hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1)))
+                    .child(div().flex_none().child(super::icons::icon(icon_name, 14.0, color)))
                     .child(issue.message.clone())
                     .on_click(cx.listener(move |ws: &mut Workspace, _, _, cx| {
                         let state = app_state_mut(cx);
@@ -1500,28 +1624,48 @@ impl Workspace {
         widgets::panel(theme)
             .id("validation-panel")
             .absolute()
-            .top(px(52.))
-            .right(px(262.))
-            .w(px(360.))
-            .max_h(px(420.))
-            .p_3()
+            .top(px(58.))
+            .right(px(268.))
+            .w(px(380.))
+            .max_h(px(440.))
+            .p(px(16.))
             .flex_col()
-            .gap_2()
-            .shadow_lg()
+            .gap(px(10.))
             .child(
                 div()
-                    .text_size(px(13.0))
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .text_color(theme.rgb(theme.fg_highlight))
-                    .child("Validation Results"),
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(13.5))
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(theme.rgb(theme.fg_highlight))
+                            .child("Validation"),
+                    )
+                    .child(
+                        div()
+                            .id("validation-close-x")
+                            .size(px(24.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.12)))
+                            .child(super::icons::icon("x", 13.0, theme.rgb(theme.fg_muted)))
+                            .on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
+                                ws.validation_visible = false;
+                                cx.notify();
+                            })),
+                    ),
             )
             .child(
                 div()
                     .text_size(px(11.5))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(theme.rgb(theme.button_highlight))
+                    .text_color(theme.rgb(theme.fg_muted))
                     .child(format!(
-                        "Found: {errors} errors, {warnings} warnings, {infos}"
+                        "{errors} errors · {warnings} warnings · {infos} info"
                     )),
             )
             .child(
@@ -1532,16 +1676,6 @@ impl Workspace {
                     .overflow_y_scroll()
                     .flex_col()
                     .children(rows),
-            )
-            .child(
-                div().flex().justify_end().child(
-                    widgets::button("validation-close", "Close", BtnVariant::Default, theme).on_click(
-                        cx.listener(|ws: &mut Workspace, _, _, cx| {
-                            ws.validation_visible = false;
-                            cx.notify();
-                        }),
-                    ),
-                ),
             )
             .into_any_element()
     }
@@ -1555,24 +1689,24 @@ impl Workspace {
             .collect();
         div()
             .absolute()
-            .bottom(px(34.0 + STRIP_H))
+            .bottom(px(36.0 + STRIP_H))
             .left_0()
             .right_0()
             .flex()
             .flex_col()
             .items_center()
-            .gap_1()
+            .gap(px(6.))
             .children(toasts.into_iter().map(|(id, text)| {
                 div()
                     .id(("toast", id))
-                    .px_3()
-                    .py_1p5()
-                    .rounded_lg()
-                    .bg(theme.rgba(theme.bg_elevated, 0.92))
+                    .px(px(12.))
+                    .py(px(7.))
+                    .rounded(px(8.))
+                    .bg(theme.rgba(theme.bg_elevated, 0.95))
                     .border_1()
                     .border_color(theme.rgba(theme.border, 0.9))
                     .shadow_md()
-                    .text_size(px(11.5))
+                    .text_size(px(12.))
                     .text_color(theme.rgb(theme.fg_text))
                     .child(text)
             }))
@@ -1607,7 +1741,6 @@ impl Render for Workspace {
             .flex_col()
             .text_size(px(12.5))
             .text_color(theme.rgb(theme.fg_text))
-            .font_family(".SystemUIText") // system UI font (Segoe UI on Windows)
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::next_image_action))
             .on_action(cx.listener(Self::prev_image_action))

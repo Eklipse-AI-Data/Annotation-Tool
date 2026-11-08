@@ -642,18 +642,42 @@ impl Render for Canvas {
                     .flex_col()
                     .items_center()
                     .justify_center()
-                    .gap_2()
+                    .gap(px(12.))
                     .child(
                         div()
-                            .text_size(px(34.))
-                            .text_color(theme.rgba(theme.fg_muted, 0.4))
-                            .child("🖼"),
+                            .size(px(56.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(14.))
+                            .bg(theme.rgba(theme.fg_muted, 0.08))
+                            .border_1()
+                            .border_color(theme.rgba(theme.fg_muted, 0.14))
+                            .child(super::icons::icon(
+                                "image",
+                                26.0,
+                                theme.rgba(theme.fg_muted, 0.6),
+                            )),
                     )
                     .child(
                         div()
-                            .text_size(px(13.))
-                            .text_color(theme.rgb(theme.fg_muted))
-                            .child("No image loaded — open a directory to start annotating"),
+                            .text_size(px(13.5))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme.rgb(theme.fg_text))
+                            .child("No image loaded"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .text_size(px(11.5))
+                                    .text_color(theme.rgb(theme.fg_muted))
+                                    .child("Open a directory to start annotating —"),
+                            )
+                            .child(super::widgets::kbd("Ctrl+Shift+O", theme)),
                     ),
             )
             .into_any_element()

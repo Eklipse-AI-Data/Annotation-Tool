@@ -1,4 +1,5 @@
 pub mod canvas;
+pub mod icons;
 pub mod dialogs;
 pub mod entry;
 pub mod filmstrip;

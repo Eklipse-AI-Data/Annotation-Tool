@@ -159,11 +159,10 @@ impl Render for Filmstrip {
                 }
 
                 let border = if is_current {
-                    theme.rgb(theme.selection)
+                    theme.rgb(theme.accent)
                 } else {
                     theme.rgba(theme.border, 0.8)
                 };
-                let _border_w = if is_current { 2.5 } else { 1.0 };
 
                 slots.push(
                     div()
@@ -174,8 +173,9 @@ impl Render for Filmstrip {
                         .size(px(THUMB_W))
                         .h(px(THUMB_H))
                         .overflow_hidden()
-                        .rounded(px(4.0))
-                        .border_1()
+                        .rounded(px(5.0))
+                        .when(is_current, |el| el.border_2())
+                        .when(!is_current, |el| el.border_1())
                         .border_color(border)
                         .child(match thumb {
                             Some(image) => img(image)
@@ -184,13 +184,9 @@ impl Render for Filmstrip {
                                 .into_any_element(),
                             None => div()
                                 .size_full()
-                                .bg(theme.rgb(theme.entry_bg))
+                                .bg(theme.rgba(theme.fg_muted, 0.1))
                                 .into_any_element(),
                         })
-                        .when_some(
-                            if idx == filenames.len() - 1 { None } else { Some(()) },
-                            |el, _| el,
-                        )
                         .into_any_element(),
                 );
             }

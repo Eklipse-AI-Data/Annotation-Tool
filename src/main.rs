@@ -20,8 +20,10 @@ use ui::theme::ThemeState;
 use ui::workspace::Workspace;
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
-        ThemeState::init(cx, "Midnight Glass");
+    Application::new()
+        .with_assets(ui::icons::IconAssets)
+        .run(|cx: &mut App| {
+        ThemeState::init(cx, "Dark");
         images::ImageStore::init(cx);
 
         let config = state::config::Config::load();

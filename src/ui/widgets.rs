@@ -1,12 +1,13 @@
 //! The design-system widgets: buttons, checkboxes, section labels, progress
-//! bars, panels, tabs, dividers. All are lightweight styled-div builders;
-//! callers attach `.on_click()` / `.on_hover()` handlers.
+//! bars, panels, tabs, dividers. Quiet, neutral, generously spaced — one
+//! accent color used sparingly.
 
 use gpui::{
-    div, prelude::*, px, relative, ElementId, Hsla,
-    InteractiveElement, ParentElement, Pixels, SharedString, Stateful, Styled,
+    div, prelude::*, px, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels,
+    SharedString, Stateful, Styled,
 };
 
+use super::icons::icon;
 use super::theme::Theme;
 
 // ---------------------------------------------------------------------------
@@ -15,108 +16,131 @@ use super::theme::Theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BtnVariant {
-    /// Neutral surface button.
+    /// Quiet outline button for secondary actions.
     Default,
-    /// Accent-filled primary button ("Execute", "Apply", "Load").
+    /// Accent-filled primary button ("Execute", "Apply", "Save & Close").
     Accent,
-    /// Danger-filled destructive button.
+    /// Destructive outline button (danger text + border).
     Danger,
 }
 
 pub fn button(
-    id: impl Into<ElementId>,
+    id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
     variant: BtnVariant,
     theme: &Theme,
 ) -> Stateful<gpui::Div> {
+    button_with_icon(id, label, None, variant, theme)
+}
+
+/// Button with an optional leading icon (icon name from `crate::ui::icons`).
+pub fn button_with_icon(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    leading_icon: Option<&'static str>,
+    variant: BtnVariant,
+    theme: &Theme,
+) -> Stateful<gpui::Div> {
     let label = label.into();
-    let (bg, fg, hover_bg, pressed_bg, border): (Hsla, Hsla, Hsla, Hsla, Option<Hsla>) =
-        match variant {
-            BtnVariant::Default => (
-                theme.rgb(theme.button_bg),
-                theme.rgb(theme.button_fg),
-                theme.rgb(theme.button_hover),
-                theme.rgb(theme.button_pressed),
-                Some(theme.rgba(theme.border, 0.7)),
-            ),
-            BtnVariant::Accent => (
-                theme.rgb(theme.accent),
-                if theme.dark { theme.rgb(0xFFFFFF) } else { theme.rgb(0xFFFFFF) },
-                theme.lighten(theme.accent, 0.12),
-                theme.darken(theme.accent, 0.12),
-                None,
-            ),
-            BtnVariant::Danger => (
-                theme.rgb(theme.danger),
-                theme.rgb(0xFFFFFF),
-                theme.lighten(theme.danger, 0.12),
-                theme.darken(theme.danger, 0.12),
-                None,
-            ),
-        };
+    // Ghost-first design: quiet actions are borderless text on hover pills.
+    let (bg, fg, hover_bg): (Hsla, Hsla, Hsla) = match variant {
+        BtnVariant::Default => (
+            gpui::transparent_black(),
+            theme.rgba(theme.fg_text, 0.88),
+            theme.rgba(theme.fg_muted, 0.13),
+        ),
+        BtnVariant::Accent => (
+            theme.rgb(theme.accent),
+            gpui::rgb(0xFFFFFF).into(),
+            theme.rgb(theme.accent_hover),
+        ),
+        BtnVariant::Danger => (
+            gpui::transparent_black(),
+            theme.rgb(theme.danger),
+            theme.rgba(theme.danger, 0.12),
+        ),
+    };
 
     let mut btn = div()
         .id(id.into())
-        .px_3()
-        .h(px(28.))
+        .px(px(12.))
+        .h(px(32.))
         .flex()
         .items_center()
         .justify_center()
-        .rounded_md()
+        .gap(px(7.))
+        .rounded(px(7.))
         .text_size(px(12.5))
         .font_weight(gpui::FontWeight::MEDIUM)
         .bg(bg)
         .text_color(fg)
         .cursor_pointer()
         .hover(move |s| s.bg(hover_bg))
-        .active(move |s| s.bg(pressed_bg));
-    if let Some(border) = border {
-        btn = btn.border_1().border_color(border);
+        .active(move |s| s.bg(hover_bg));
+    if let Some(name) = leading_icon {
+        btn = btn.child(icon(name, 14.0, fg));
     }
     btn.child(label)
 }
 
+/// Square toolbar icon button (30×30) with a monochrome SVG icon.
 pub fn icon_button(
-    id: impl Into<ElementId>,
-    icon: impl Into<SharedString>,
-    tooltip: &'static str,
+    id: impl Into<gpui::ElementId>,
+    icon_name: &'static str,
+    active: bool,
     theme: &Theme,
 ) -> Stateful<gpui::Div> {
-    let hover = theme.rgba(theme.button_hover, 0.4);
-    let pressed = theme.rgba(theme.button_hover, 0.65);
+    let fg = if active {
+        theme.rgb(theme.fg_highlight)
+    } else {
+        theme.rgba(theme.fg_text, 0.6)
+    };
+    let hover = theme.rgba(theme.fg_muted, 0.12);
+    let hover_fg = theme.rgb(theme.fg_text);
+    let active_bg = theme.selection_bg();
     div()
         .id(id.into())
         .size(px(30.))
         .flex()
         .items_center()
         .justify_center()
-        .rounded_md()
-        .text_size(px(15.))
-        .bg(gpui::transparent_black())
-        .text_color(theme.rgb(theme.fg_muted))
+        .rounded(px(7.))
+        .when(active, |el| el.bg(active_bg))
+        .text_color(fg)
         .cursor_pointer()
-        .hover(move |s| s.bg(hover))
-        .active(move |s| s.bg(pressed))
-        .child(div().child(icon.into()).id(tooltip))
+        .hover(move |s| s.bg(hover).text_color(hover_fg))
+        .active(move |s| s.bg(hover))
+        .child(icon(icon_name, 16.0, fg))
+}
+
+/// Thin vertical toolbar separator.
+pub fn toolbar_divider(theme: &Theme) -> gpui::Div {
+    div()
+        .w(px(1.))
+        .h(px(18.))
+        .mx(px(4.))
+        .flex_none()
+        .bg(theme.rgba(theme.border, 0.9))
 }
 
 // ---------------------------------------------------------------------------
 // Labels
 // ---------------------------------------------------------------------------
 
+/// Small uppercase eyebrow label for section headers.
 pub fn section_label(text: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
     div()
-        .mb_1()
-        .px_2()
-        .text_size(px(11.0))
+        .mb(px(8.))
+        .text_size(px(10.5))
         .font_weight(gpui::FontWeight::SEMIBOLD)
-        .text_color(theme.rgb(theme.button_highlight))
+        .text_color(theme.rgba(theme.fg_text, 0.55))
         .child(text.into())
 }
 
 pub fn caption(text: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
     div()
-        .text_size(px(11.0))
+        .text_size(px(11.5))
+        .line_height(px(16.0))
         .text_color(theme.rgb(theme.fg_muted))
         .child(text.into())
 }
@@ -128,76 +152,94 @@ pub fn body_text(text: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
         .child(text.into())
 }
 
+/// Keyboard-key chip, e.g. for shortcut hints.
+pub fn kbd(text: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
+    div()
+        .px(px(5.))
+        .py(px(1.))
+        .rounded(px(4.))
+        .bg(theme.rgb(theme.bg_hover))
+        .border_1()
+        .border_color(theme.rgba(theme.border, 0.8))
+        .text_size(px(10.5))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(theme.rgb(theme.fg_muted))
+        .child(text.into())
+}
+
 // ---------------------------------------------------------------------------
 // Checkbox
 // ---------------------------------------------------------------------------
 
 pub fn checkbox(
-    id: impl Into<ElementId>,
+    id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
     checked: bool,
     theme: &Theme,
 ) -> Stateful<gpui::Div> {
     let label = label.into();
-    let (box_bg, mark_color) = if checked {
-        (theme.rgb(theme.accent), theme.rgb(0xFFFFFF))
+    let (box_bg, mark) = if checked {
+        (
+            theme.rgb(theme.accent),
+            icon("check", 11.0, gpui::rgb(0xFFFFFF).into()).into_any_element(),
+        )
     } else {
-        (theme.rgb(theme.entry_bg), theme.rgb(theme.fg_muted))
+        (theme.rgb(theme.entry_bg), div().into_any_element())
     };
+    let hover = theme.rgba(theme.bg_hover, 0.6);
     div()
         .id(id.into())
         .flex()
         .items_center()
-        .gap_2()
-        .py_1()
-        .px_2()
-        .rounded_sm()
+        .gap(px(8.))
+        .py(px(4.))
+        .px(px(6.))
+        .mx(px(-6.))
+        .rounded(px(6.))
         .cursor_pointer()
-        .hover(move |s| s.bg(theme.rgba(theme.button_hover, 0.25)))
+        .hover(move |s| s.bg(hover))
         .child(
             div()
-                .size(px(15.))
+                .size(px(16.))
                 .flex()
                 .items_center()
                 .justify_center()
                 .rounded(px(4.))
                 .border_1()
-                .border_color(theme.rgba(theme.border, 0.9))
+                .border_color(if checked {
+                    theme.rgb(theme.accent)
+                } else {
+                    theme.rgba(theme.fg_muted, 0.5)
+                })
                 .bg(box_bg)
-                .text_size(px(10.5))
-                .text_color(mark_color)
-                .child(if checked { "✓" } else { "" }),
+                .child(mark),
         )
         .child(
             div()
-                .text_size(px(12.0))
+                .text_size(px(12.))
+                .line_height(px(16.))
                 .text_color(theme.rgb(theme.fg_text))
                 .child(label),
         )
 }
 
 // ---------------------------------------------------------------------------
-// Progress bar
+// Progress bar (slim, unlabeled — pair with a caption)
 // ---------------------------------------------------------------------------
 
 pub fn progress_bar(
-    id: impl Into<ElementId>,
+    id: impl Into<gpui::ElementId>,
     value: f32,
-    text: Option<SharedString>,
     theme: &Theme,
 ) -> Stateful<gpui::Div> {
     let pct = value.clamp(0.0, 1.0);
-    let fill = theme.rgb(theme.button_highlight);
-    let text_color = theme.rgb(theme.fg_text);
     div()
         .id(id.into())
         .relative()
-        .h(px(20.))
+        .h(px(6.))
         .w_full()
-        .rounded(px(10.))
-        .bg(theme.rgb(theme.entry_bg))
-        .border_1()
-        .border_color(theme.rgba(theme.border, 0.8))
+        .rounded(px(3.))
+        .bg(theme.rgba(theme.fg_muted, 0.18))
         .overflow_hidden()
         .child(
             div()
@@ -205,27 +247,10 @@ pub fn progress_bar(
                 .left_0()
                 .top_0()
                 .bottom_0()
-                .w(relative(pct))
-                .rounded(px(10.))
-                .bg(fill),
+                .w(gpui::relative(pct))
+                .rounded(px(3.))
+                .bg(theme.rgb(theme.accent)),
         )
-        .when_some(text, |el, text| {
-            el.child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .bottom_0()
-                    .left_0()
-                    .right_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(px(10.5))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(text_color)
-                    .child(text),
-            )
-        })
 }
 
 // ---------------------------------------------------------------------------
@@ -234,45 +259,46 @@ pub fn progress_bar(
 
 pub fn panel(theme: &Theme) -> gpui::Div {
     div()
-        .rounded_lg()
+        .rounded(px(12.))
         .bg(theme.rgb(theme.bg_elevated))
         .border_1()
-        .border_color(theme.rgba(theme.border, 0.8))
+        .border_color(theme.rgba(theme.border, 0.9))
+        .shadow_lg()
 }
 
 #[allow(dead_code)]
 pub fn h_divider(theme: &Theme) -> gpui::Div {
-    div().h(px(0.)).w_full().border_t_1().border_color(theme.rgba(theme.border, 0.6))
+    div().h(px(0.)).w_full().border_t_1().border_color(theme.rgba(theme.border, 0.7))
 }
 
 #[allow(dead_code)]
 pub fn v_divider(theme: &Theme) -> gpui::Div {
-    div().w(px(0.).max(px(1.))).h_full().border_l_1().border_color(theme.rgba(theme.border, 0.6))
+    div().w(px(1.)).h_full().bg(theme.rgba(theme.border, 0.7))
 }
 
-/// One tab of the sidebar's tab bar. `active` selects the highlight style.
+/// One tab of a segmented control.
 pub fn tab(
-    id: impl Into<ElementId>,
+    id: impl Into<gpui::ElementId>,
     label: impl Into<SharedString>,
     active: bool,
     theme: &Theme,
 ) -> Stateful<gpui::Div> {
     let (bg, fg) = if active {
-        (theme.rgba(theme.button_highlight, 0.18), theme.rgb(theme.button_highlight))
+        (theme.rgb(theme.bg_elevated), theme.rgb(theme.fg_text))
     } else {
         (gpui::transparent_black(), theme.rgb(theme.fg_muted))
     };
-    let active_bg = theme.rgba(theme.button_highlight, 0.18);
-    let inactive_hover = theme.rgba(theme.button_hover, 0.3);
+    let active_bg = theme.rgb(theme.bg_elevated);
+    let inactive_hover = theme.rgba(theme.fg_muted, 0.1);
     div()
         .id(id.into())
         .flex_1()
-        .h(px(30.))
+        .h(px(28.))
         .flex()
         .items_center()
         .justify_center()
-        .rounded_md()
-        .text_size(px(12.0))
+        .rounded(px(6.))
+        .text_size(px(12.))
         .font_weight(if active { gpui::FontWeight::SEMIBOLD } else { gpui::FontWeight::MEDIUM })
         .bg(bg)
         .text_color(fg)
@@ -281,83 +307,55 @@ pub fn tab(
         .child(label.into())
 }
 
-/// Collapsible section header. Caller wires the click; `expanded` picks the
-/// chevron direction.
+/// Inset track that contains [`tab`] buttons.
+pub fn segmented_control(theme: &Theme) -> gpui::Div {
+    div()
+        .flex()
+        .gap(px(2.))
+        .p(px(2.))
+        .rounded(px(8.))
+        .bg(theme.rgba(theme.fg_muted, 0.1))
+}
+
+/// Collapsible section header: uppercase eyebrow + chevron.
 pub fn collapsible_header(
-    id: impl Into<ElementId>,
+    id: impl Into<gpui::ElementId>,
     title: &'static str,
     expanded: bool,
     theme: &Theme,
 ) -> Stateful<gpui::Div> {
-    let hover = theme.rgba(theme.button_hover, 0.3);
+    let chevron = if expanded { "chevron-down" } else { "chevron-right" };
+    let muted = theme.rgb(theme.fg_muted);
+    let hover = theme.rgba(theme.fg_muted, 0.1);
     div()
         .id(id.into())
         .flex()
         .items_center()
-        .gap_1p5()
-        .h(px(26.))
-        .px_1()
-        .rounded_sm()
+        .gap(px(4.))
+        .h(px(24.))
+        .mx(px(-6.))
+        .px(px(6.))
+        .rounded(px(6.))
         .cursor_pointer()
         .hover(move |s| s.bg(hover))
+        .child(icon(chevron, 12.0, muted))
         .child(
             div()
-                .text_size(px(9.0))
-                .text_color(theme.rgb(theme.fg_muted))
-                .child(if expanded { "▼" } else { "▶" }),
-        )
-        .child(
-            div()
-                .text_size(px(11.0))
+                .text_size(px(10.5))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(theme.rgb(theme.fg_highlight))
+                .text_color(muted)
                 .child(title),
         )
 }
 
-/// A rounded color swatch (class color chip).
+/// Rounded color swatch (class color chip).
 pub fn color_swatch(color: (u8, u8, u8), size: Pixels, theme: &Theme) -> gpui::Div {
     let (r, g, b) = color;
     div()
         .size(size)
         .flex_none()
-        .rounded(px(3.0))
+        .rounded(px(3.5))
         .bg(gpui::rgb((r as u32) << 16 | (g as u32) << 8 | b as u32))
         .border_1()
-        .border_color(theme.rgba(0x000000, if theme.dark { 0.5 } else { 0.25 }))
+        .border_color(theme.rgba(0x000000, if theme.dark { 0.45 } else { 0.2 }))
 }
-
-// ---------------------------------------------------------------------------
-// Theme color helpers
-// ---------------------------------------------------------------------------
-
-impl Theme {
-    /// Lighten toward white by `amount` (0.0–1.0).
-    pub fn lighten(&self, color: u32, amount: f32) -> Hsla {
-        let r = ((color >> 16) & 0xFF) as f32;
-        let g = ((color >> 8) & 0xFF) as f32;
-        let b = (color & 0xFF) as f32;
-        let f = |c: f32| c + (255.0 - c) * amount;
-        let mut h: Hsla = gpui::rgb(
-            ((f(r) as u32) << 16) | ((f(g) as u32) << 8) | (f(b) as u32),
-        )
-        .into();
-        h.a = 1.0;
-        h
-    }
-
-    /// Darken toward black by `amount` (0.0–1.0).
-    pub fn darken(&self, color: u32, amount: f32) -> Hsla {
-        let r = ((color >> 16) & 0xFF) as f32;
-        let g = ((color >> 8) & 0xFF) as f32;
-        let b = (color & 0xFF) as f32;
-        let f = |c: f32| c * (1.0 - amount);
-        let mut h: Hsla = gpui::rgb(
-            ((f(r) as u32) << 16) | ((f(g) as u32) << 8) | (f(b) as u32),
-        )
-        .into();
-        h.a = 1.0;
-        h
-    }
-}
-
