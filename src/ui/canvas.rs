@@ -616,6 +616,7 @@ impl Render for Canvas {
             .overflow_hidden()
             .track_focus(&self.focus)
             .bg(theme.rgb(theme.bg_main))
+            .cursor(gpui::CursorStyle::Crosshair)
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_down))
@@ -748,7 +749,7 @@ impl Element for CanvasElement {
         &mut self,
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&gpui::InspectorElementId>,
-        _bounds: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         _prepaint: &mut Self::PrepaintState,
         window: &mut Window,
@@ -773,6 +774,21 @@ impl Element for CanvasElement {
                 state.show_labels,
             )
         };
+
+        // GPUI paints in client-window coordinates: shift the transform from
+        // element-local space into client space so everything lines up with
+        // the mouse. (Input math stays element-local via view_bounds.)
+        let t = Transform {
+            origin: Point {
+                x: t.origin.x + bounds.origin.x,
+                y: t.origin.y + bounds.origin.y,
+            },
+            ..t
+        };
+        let hover = hover.map(|h| Point {
+            x: h.x + bounds.origin.x,
+            y: h.y + bounds.origin.y,
+        });
 
         // --- Image ---
         if let Some(img) = &image {
@@ -875,24 +891,36 @@ impl Element for CanvasElement {
 
         // --- In-progress draw rectangle ---
         if let Gesture::Drawing { start, cur } = gesture {
-            let p1 = Point { x: start.x.min(cur.x), y: start.y.min(cur.y) };
-            let p2 = Point { x: start.x.max(cur.x), y: start.y.max(cur.y) };
+            let p1 = Point {
+                x: start.x.min(cur.x) + bounds.origin.x,
+                y: start.y.min(cur.y) + bounds.origin.y,
+            };
+            let p2 = Point {
+                x: start.x.max(cur.x) + bounds.origin.x,
+                y: start.y.max(cur.y) + bounds.origin.y,
+            };
             stroke_box(window, p1, p2, theme.rgb(theme.selected_box), 2.0, Some((4.0, 4.0)));
         }
 
         // --- Crosshair ---
         if let Some(hover) = hover {
-            let (ch_color, dash) = parse_crosshair_config(&crosshair_color, crosshair_dash, theme);
-            let (w, h) = (self.canvas.read(cx).view_size.width, self.canvas.read(cx).view_size.height);
-            let mut h_line = PathBuilder::stroke(px(1.0)).dash_array(&[px(dash.0), px(dash.1)]);
-            h_line.move_to(Point { x: px(0.0), y: hover.y });
-            h_line.line_to(Point { x: w, y: hover.y });
+            let (mut ch_color, _dash) = parse_crosshair_config(&crosshair_color, crosshair_dash, theme);
+            // gpui 0.2.2 silently drops dash_array paths, so the dashed
+            // crosshair becomes a semi-transparent solid line instead.
+            ch_color.a *= 0.7;
+            let x0 = bounds.origin.x;
+            let y0 = bounds.origin.y;
+            let w = bounds.size.width;
+            let h = bounds.size.height;
+            let mut h_line = PathBuilder::stroke(px(1.0));
+            h_line.move_to(Point { x: x0, y: hover.y });
+            h_line.line_to(Point { x: x0 + w, y: hover.y });
             if let Ok(p) = h_line.build() {
                 window.paint_path(p, ch_color);
             }
-            let mut v_line = PathBuilder::stroke(px(1.0)).dash_array(&[px(dash.0), px(dash.1)]);
-            v_line.move_to(Point { x: hover.x, y: px(0.0) });
-            v_line.line_to(Point { x: hover.x, y: h });
+            let mut v_line = PathBuilder::stroke(px(1.0));
+            v_line.move_to(Point { x: hover.x, y: y0 });
+            v_line.line_to(Point { x: hover.x, y: y0 + h });
             if let Ok(p) = v_line.build() {
                 window.paint_path(p, ch_color);
             }
