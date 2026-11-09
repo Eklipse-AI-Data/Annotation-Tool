@@ -1,6 +1,6 @@
 //! All workspace action handlers and background flows — the port of
 //! `controller.py`: navigation, editing, filters, presets, batch operations,
-//! class remapping, lowres export, and the modal progress-task runner.
+//! class remapping, and the modal progress-task runner.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc as std_mpsc;
@@ -22,7 +22,6 @@ const PRESET_HOLD_MS: u64 = 250;
 
 /// Result payload for modal background tasks.
 pub enum TaskValue {
-    Lowres(Option<PathBuf>),
     ClassRemap {
         backup_dir: Option<String>,
         updated: usize,
@@ -67,20 +66,13 @@ impl Workspace {
         self.open_images_dialog(cx);
     }
 
-    pub fn set_output_dir_action(&mut self, _: &SetOutputDir, _window: &mut Window, cx: &mut Context<Self>) {
-        self.set_output_dir_dialog(cx);
-    }
-
     // ------------------------------------------------------------------
     // Startup
     // ------------------------------------------------------------------
 
     pub fn init_from_session(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         // Directory existence checks (Python: startup warning dialogs).
-        let (image_dir, output_dir) = {
-            let s = app_state(cx);
-            (s.image_dir.clone(), s.output_dir.clone())
-        };
+        let image_dir = app_state(cx).image_dir.clone();
         if !image_dir.is_empty() && !Path::new(&image_dir).is_dir() {
             self.startup_alerts.push((
                 "Session Warning".into(),
@@ -89,18 +81,9 @@ impl Workspace {
                 ),
             ));
             app_state_mut(cx).image_dir = String::new();
+            app_state_mut(cx).output_dir = String::new();
             app_state_mut(cx).current_image_index = -1;
         }
-        if !output_dir.is_empty() && !Path::new(&output_dir).is_dir() {
-            self.startup_alerts.push((
-                "Session Warning".into(),
-                format!(
-                    "The last output directory no longer exists:\n{output_dir}\n\nPlease select a new output directory."
-                ),
-            ));
-            app_state_mut(cx).output_dir = String::new();
-        }
-
         if !app_state(cx).image_dir.is_empty() {
             let saved_index = app_state(cx)
                 .session
@@ -351,7 +334,7 @@ impl Workspace {
             };
             let _ = cx.update(|cx| {
                 ws.update(cx, |ws, cx| {
-                    // Autosave the current image into the old output dir first.
+                    // Autosave the current image into its folder first.
                     let (idx, auto) = {
                         let s = app_state(cx);
                         (s.current_image_index, s.auto_save)
@@ -359,69 +342,11 @@ impl Workspace {
                     if idx != -1 && auto {
                         app_state_mut(cx).save_annotations();
                     }
-                    let original = std::rc::Rc::new(dir.clone());
-                    let original_yes = std::rc::Rc::clone(&original);
-                    let original_no = std::rc::Rc::clone(&original);
-                    let dir_yes = dir.clone();
-                    ws.confirm_with_cancel(
-                        "Lower Resolution?",
-                        "Do you want to lower the resolution of images before loading?\n\nThis will create a new directory with '_lowres' suffix containing images resized to 720px wide (aspect ratio preserved).\n\nOriginal images will remain untouched.",
-                        Box::new(move |ws, _window, cx| {
-                            ws.run_lowres_task(PathBuf::from(&dir_yes), original_yes.to_string(), cx);
-                        }),
-                        Box::new(move |ws, _window, cx| {
-                            // "No" — open the original directory directly.
-                            ws.finish_open_dir(original_no.to_string(), cx);
-                        }),
-                    );
-                    cx.notify();
+                    ws.finish_open_dir(dir, cx);
                 });
             });
         })
         .detach();
-    }
-
-    pub fn run_lowres_task(&mut self, path: PathBuf, original: String, cx: &mut Context<Self>) {
-        if self.task_running {
-            self.finish_open_dir(original, cx);
-            return;
-        }
-        self.task_running = true;
-        self.modal = Some(Modal::Progress {
-            title: "Resizing Images".into(),
-            label: "Starting…".into(),
-            current: 0,
-            total: 0,
-        });
-        cx.notify();
-
-        let (tx, rx) = std_mpsc::channel::<TaskMsg>();
-        let progress_tx = tx.clone();
-        std::thread::spawn(move || {
-            let report = move |current: usize, total: usize, name: &str| {
-                let _ = progress_tx.send(TaskMsg::Progress(current, total, format!("Resizing {name}")));
-            };
-            let result = crate::images::resize_images_to_lowres(&path, report);
-            let _ = tx.send(TaskMsg::Done(Ok(TaskValue::Lowres(result))));
-        });
-
-        self.pump_task_messages(rx, cx, Box::new(move |ws, result, cx| match result {
-            Ok(TaskValue::Lowres(Some(dir))) => {
-                ws.finish_open_dir(dir.to_string_lossy().to_string(), cx);
-            }
-            Ok(TaskValue::Lowres(None)) => {
-                ws.alert(
-                    "Error",
-                    "Failed to process images. Loading original directory instead.",
-                );
-                ws.finish_open_dir(original, cx);
-            }
-            Err(msg) => {
-                ws.alert("Error", msg);
-                ws.finish_open_dir(original, cx);
-            }
-            _ => {}
-        }));
     }
 
     pub fn finish_open_dir(&mut self, image_dir: String, cx: &mut Context<Self>) {
@@ -435,10 +360,7 @@ impl Workspace {
             state.boxes.clear();
             state.selected_indices.clear();
             state.image_dir = image_dir;
-            // A newly opened folder reads/writes its labels alongside its
-            // images; keeping the previous folder's output dir would load
-            // (and save) annotations from the wrong project. Use "Set output
-            // folder" afterwards to point elsewhere.
+            // Labels are always read/written alongside the images.
             state.output_dir = state.image_dir.clone();
             state.refresh_preset_scope();
         }
@@ -456,54 +378,6 @@ impl Workspace {
         self.refresh_class_counts(cx);
         self.sync_filmstrip_current(cx);
         cx.notify();
-    }
-
-    pub fn set_output_dir_dialog(&mut self, cx: &mut Context<Self>) {
-        if self.task_running {
-            return;
-        }
-        self.guard_unsaved(|ws, cx| ws.set_output_dir_picker(cx), cx);
-    }
-
-    fn set_output_dir_picker(&mut self, cx: &mut Context<Self>) {
-        let ws = cx.entity();
-        cx.spawn(async move |_this: gpui::WeakEntity<Workspace>, cx: &mut gpui::AsyncApp| {
-            let Some(dir) = AsyncFileDialog::new()
-                .pick_folder()
-                .await
-                .and_then(|f| f.path().to_str().map(|s| s.to_string()))
-            else {
-                return;
-            };
-            let _ = cx.update(|cx| {
-                ws.update(cx, |ws, cx| {
-                    let current = {
-                        let state = app_state(cx);
-                        state.image_list.get(state.current_image_index.max(0) as usize).cloned()
-                    };
-                    ws.save_current_before_list_change(cx);
-                    let index = {
-                        let state = app_state_mut(cx);
-                        state.filter_scan_generation = state.filter_scan_generation.wrapping_add(1);
-                        state.output_dir = dir.clone();
-                        state.refresh_preset_scope();
-                        state.unannotated_filter_active = false;
-                        state.image_list = state.full_image_list.clone();
-                        current.and_then(|name| state.image_list.iter().position(|image| image == &name)).unwrap_or(0)
-                    };
-                    ws.filter_scan_running = false;
-                    ws.filter_class_id = None;
-                    if !app_state(cx).image_list.is_empty() {
-                        ws.load_image(index, cx);
-                    }
-                    app_state_mut(cx).save_session();
-                    ws.refresh_class_counts(cx);
-                    ws.alert("Info", format!("Output directory set to: {dir}"));
-                    cx.notify();
-                });
-            });
-        })
-        .detach();
     }
 
     pub fn load_recent_project(&mut self, cx: &mut Context<Self>) {
@@ -537,11 +411,7 @@ impl Workspace {
             state.boxes.clear();
             state.selected_indices.clear();
             state.image_dir = image_dir.clone();
-            state.output_dir = if !project.output_dir.is_empty() && Path::new(&project.output_dir).is_dir() {
-                project.output_dir.clone()
-            } else {
-                image_dir.clone()
-            };
+            state.output_dir = image_dir.clone();
             state.refresh_preset_scope();
             state.save_session();
         }
@@ -638,7 +508,7 @@ impl Workspace {
             return false;
         }
         if !has_output {
-            self.alert("Warning", "Set an output folder before saving.");
+            self.alert("Warning", "Open an image folder before saving.");
             cx.notify();
             return false;
         }
@@ -1036,7 +906,7 @@ impl Workspace {
 
     fn start_image_filter_scan(&mut self, class_id: Option<i64>, cx: &mut Context<Self>) {
         if app_state(cx).output_dir.is_empty() {
-            self.alert("Warning", "Please set Output Directory first.");
+            self.alert("Warning", "Open an image folder first.");
             cx.notify();
             return;
         }
@@ -1516,7 +1386,7 @@ impl Workspace {
         }
         let output_dir = app_state(cx).output_dir.clone();
         if output_dir.is_empty() {
-            self.alert("Error", "No output directory (labels folder) loaded.");
+            self.alert("Error", "Open an image folder first.");
             cx.notify();
             return;
         }
@@ -1530,7 +1400,7 @@ impl Workspace {
             }
         }
         if txt_files.is_empty() {
-            self.alert("Info", "No annotation files found in the output directory.");
+            self.alert("Info", "No annotation files found in the image folder.");
             cx.notify();
             return;
         }

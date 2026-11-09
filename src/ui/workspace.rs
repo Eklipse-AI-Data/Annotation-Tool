@@ -247,22 +247,6 @@ impl Workspace {
         });
     }
 
-    pub fn confirm_with_cancel(
-        &mut self,
-        title: &str,
-        message: impl Into<String>,
-        on_yes: Box<dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>)>,
-        on_no: Box<dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>)>,
-    ) {
-        self.modal = Some(Modal::Confirm {
-            title: title.to_string().into(),
-            message: message.into(),
-            on_yes,
-            on_no: Some(on_no),
-            labels: None,
-        });
-    }
-
     /// True when a text entry has focus — configurable shortcuts must not
     /// fire (Python parity). Escape is exempt (handled by caller).
     pub fn entry_focused(&self, window: &Window, cx: &App) -> bool {
@@ -606,7 +590,6 @@ impl Workspace {
         let has_folder = !state.image_dir.is_empty();
         let has_output = !state.output_dir.is_empty();
         let dir_path = state.image_dir.clone();
-        let output_path = state.output_dir.clone();
         let dir_name = std::path::Path::new(&dir_path)
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -676,27 +659,16 @@ impl Workspace {
                     .child(div().text_size(px(13.)).font_weight(gpui::FontWeight::SEMIBOLD)
                         .truncate().child(dir_name))
                     .child(div().text_size(px(11.)).line_height(px(16.))
-                        .text_color(theme.rgb(theme.fg_muted)).child(dir_path.clone()))
-                    .when(has_output && output_path != dir_path, |el| el.child(
-                        div().text_size(px(11.)).line_height(px(16.))
-                            .text_color(theme.rgb(theme.fg_muted))
-                            .child(format!("Labels → {output_path}")),
-                    )),
+                        .text_color(theme.rgb(theme.fg_muted)).child(dir_path.clone())),
             ))
             .when(!has_folder, |el| el.child(widgets::caption(
                 "Open a folder to browse images and review saved boxes.", theme,
             )))
-            .child(div().flex().gap(px(6.))
-                .child(widgets::button_with_icon(
-                    "btn-open-images", "Open folder", Some("folder-open"), BtnVariant::Accent, theme,
-                ).flex_1().on_click(cx.listener(|ws: &mut Workspace, _, _window, cx| {
-                    ws.open_images_dialog(cx)
-                })))
-                .child(widgets::button_with_icon(
-                    "btn-set-output", "Output", Some("database"), BtnVariant::Default, theme,
-                ).flex_1().on_click(cx.listener(|ws: &mut Workspace, _, _window, cx| {
-                    ws.set_output_dir_dialog(cx)
-                }))))
+            .child(widgets::button_with_icon(
+                "btn-open-images", "Open image folder", Some("folder-open"), BtnVariant::Accent, theme,
+            ).w_full().on_click(cx.listener(|ws: &mut Workspace, _, _window, cx| {
+                ws.open_images_dialog(cx)
+            })))
             .child(self.render_recents_dropdown(cx));
 
         // --- Saved boxes --------------------------------------------------
@@ -704,8 +676,6 @@ impl Workspace {
             "Counting saved boxes...".to_string()
         } else if !has_folder {
             "Choose an image folder to see class counts.".to_string()
-        } else if !has_output {
-            "Set the output folder to count saved boxes.".to_string()
         } else if let Some(error) = count_error.as_ref() {
             format!("Could not count saved boxes: {error}")
         } else {
@@ -1466,7 +1436,6 @@ impl Workspace {
                     (b("undo"), "Undo"),
                     (b("redo"), "Redo"),
                     ("Ctrl+Shift+O".into(), "Open Image Folder"),
-                    ("Ctrl+Shift+S".into(), "Set Output Folder"),
                 ],
             ),
             (
@@ -1991,7 +1960,6 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_help_overlay))
             .on_action(cx.listener(Self::toggle_unannotated_action))
             .on_action(cx.listener(Self::open_images_action))
-            .on_action(cx.listener(Self::set_output_dir_action))
             .on_action(cx.listener(Self::save_annotations_action))
             .on_key_down(cx.listener(Self::on_root_key_down))
             .on_key_up(cx.listener(Self::on_root_key_up))

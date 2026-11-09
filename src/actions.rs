@@ -32,7 +32,6 @@ actions!(
         ToggleRightSidebar,
         ToggleFilmstrip,
         OpenImages,
-        SetOutputDir,
         SaveAnnotations,
     ]
 );
@@ -77,7 +76,6 @@ pub fn build_keymap(config: &Config) -> Vec<KeyBinding> {
     bindings.push(KeyBinding::new("ctrl-a", SelectAllBoxes, None));
     bindings.push(KeyBinding::new("ctrl-s", SaveAnnotations, None));
     bindings.push(KeyBinding::new("ctrl-shift-o", OpenImages, None));
-    bindings.push(KeyBinding::new("ctrl-shift-s", SetOutputDir, None));
 
     // Left/Right always navigate (duplicated with config bindings in Python)
     if config.gpui_binding("next_image").as_deref() != Some("right") {

@@ -20,7 +20,7 @@ animations and drop-in compatibility with the Python tool's data.
   (snapshot semantics identical to the original, quirks included), copy/paste/duplicate,
   box presets (tap/hold Ctrl+1–9), image filters, class editor with file remapping +
   timestamped backups, batch ID replace, validation with live toolbar indicator,
-  filmstrip thumbnails, recent projects, lowres export, configurable keybindings,
+  filmstrip thumbnails, recent projects, configurable keybindings,
   help overlay.
 
 ## Building
@@ -82,7 +82,7 @@ the original Tk syntax, so both tools read them).
 - **Saved boxes** replaces the project progress bar. Each class shows its saved box
   count, including zero-count classes. The summary shows total boxes and classes used.
 - Counts cover label files that match images in the open folder. Unrelated label
-  files in the output folder do not contribute. Unsaved edits are not counted.
+  files in the image folder do not contribute. Unsaved edits are not counted.
 - Click a class count to show images with that class. Use **Clear filters** to restore
   all images, or **Show unannotated only** to find images without saved boxes.
 - Use **Refresh** after another program changes label files. The panel shows loading

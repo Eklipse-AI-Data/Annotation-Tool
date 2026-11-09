@@ -95,11 +95,8 @@ impl AppState {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string();
-        let output_dir = session
-            .get("last_output_dir")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string();
+        // Labels always live next to the images (no separate output folder).
+        let output_dir = image_dir.clone();
 
         let mut state = Self {
             current_theme_name: session
