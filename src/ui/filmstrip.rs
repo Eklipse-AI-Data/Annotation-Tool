@@ -60,11 +60,12 @@ impl Filmstrip {
         self.clamp_scroll(count);
     }
 
+    /// Content slot under a viewport-local x (accounts for scrolling).
     fn slot_at(&self, local_x: f32) -> Option<usize> {
         if local_x < 0.0 {
             return None;
         }
-        Some((local_x / SLOT_W) as usize)
+        Some(((local_x + self.scroll_x) / SLOT_W) as usize)
     }
 
     fn on_wheel(&mut self, event: &gpui::ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -129,6 +130,7 @@ impl Render for Filmstrip {
         let current_index = state.current_image_index;
         let image_dir = state.image_dir.clone();
         let scroll_x = self.scroll_x;
+        let hovered = if self.drag_start.is_none() { self.hover.map(|(i, _)| i) } else { None };
 
         // Determine visible slots.
         let first = ((scroll_x / SLOT_W) as i64 - 1).max(0) as usize;
@@ -160,8 +162,10 @@ impl Render for Filmstrip {
 
                 let border = if is_current {
                     theme.rgb(theme.accent)
+                } else if hovered == Some(idx) {
+                    theme.rgba(theme.fg_text, 0.55)
                 } else {
-                    theme.rgba(theme.border, 0.8)
+                    theme.rgb(theme.divider)
                 };
 
                 slots.push(
@@ -200,9 +204,9 @@ impl Render for Filmstrip {
             .h(px(STRIP_H))
             .flex_none()
             .overflow_hidden()
-            .bg(theme.rgb(theme.bg_sidebar))
+            .bg(theme.rgb(theme.bg_pane))
             .border_t_1()
-            .border_color(theme.rgba(theme.border, 0.6))
+            .border_color(theme.rgb(theme.divider))
             .on_scroll_wheel(cx.listener(Self::on_wheel))
             .on_mouse_down(gpui::MouseButton::Left, cx.listener(Self::on_down))
             .on_mouse_move(cx.listener(Self::on_move))

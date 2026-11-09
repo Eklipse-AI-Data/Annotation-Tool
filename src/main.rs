@@ -40,8 +40,14 @@ fn main() {
                 focus: true,
                 ..Default::default()
             },
-            |_window, cx| {
-                cx.new(|cx| Workspace::new(cx)) // installs AppState
+            |window, cx| {
+                let workspace = cx.new(|cx| Workspace::new(cx)); // installs AppState
+                // Closing with unsaved edits: autosave, or ask first.
+                let ws = workspace.clone();
+                window.on_window_should_close(cx, move |window, cx| {
+                    ws.update(cx, |ws, cx| ws.should_close(window, cx))
+                });
+                workspace
             },
         );
 

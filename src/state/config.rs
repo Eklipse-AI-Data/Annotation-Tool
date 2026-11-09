@@ -130,6 +130,76 @@ impl Config {
     pub fn gpui_binding(&self, action: &str) -> Option<String> {
         self.bindings.get(action).and_then(|p| tk_to_gpui(p))
     }
+
+    /// Human-readable shortcut for an action ("Ctrl+C", "→"), falling back
+    /// to the raw Tk pattern when it can't be converted.
+    pub fn display_binding(&self, action: &str) -> String {
+        match self.bindings.get(action) {
+            Some(p) => tk_to_gpui(p)
+                .map(|k| pretty_keystroke(&k))
+                .unwrap_or_else(|| p.clone()),
+            None => "—".to_string(),
+        }
+    }
+}
+
+/// Formats a GPUI keystroke string (`ctrl-shift-c`, `right`) for display
+/// (`Ctrl+Shift+C`, `→`).
+pub fn pretty_keystroke(keys: &str) -> String {
+    // Split modifiers off the front; the key itself may be "-".
+    let mut parts: Vec<&str> = Vec::new();
+    let mut rest = keys;
+    loop {
+        let mut matched = false;
+        for m in ["ctrl-", "alt-", "shift-", "cmd-"] {
+            if let Some(r) = rest.strip_prefix(m) {
+                if !r.is_empty() {
+                    parts.push(&m[..m.len() - 1]);
+                    rest = r;
+                    matched = true;
+                }
+            }
+        }
+        if !matched {
+            break;
+        }
+    }
+    let mut out: Vec<String> = parts
+        .iter()
+        .map(|m| match *m {
+            "ctrl" => "Ctrl".to_string(),
+            "alt" => "Alt".to_string(),
+            "shift" => "Shift".to_string(),
+            _ => "Cmd".to_string(),
+        })
+        .collect();
+    let key = match rest {
+        "left" => "←".to_string(),
+        "right" => "→".to_string(),
+        "up" => "↑".to_string(),
+        "down" => "↓".to_string(),
+        "escape" => "Esc".to_string(),
+        "enter" => "Enter".to_string(),
+        "space" => "Space".to_string(),
+        "delete" => "Delete".to_string(),
+        "backspace" => "Backspace".to_string(),
+        "tab" => "Tab".to_string(),
+        "pageup" => "PgUp".to_string(),
+        "pagedown" => "PgDn".to_string(),
+        "home" => "Home".to_string(),
+        "end" => "End".to_string(),
+        k if k.starts_with('f') && k.len() > 1 && k[1..].chars().all(|c| c.is_ascii_digit()) => k.to_uppercase(),
+        k if k.chars().count() == 1 => k.to_uppercase(),
+        k => {
+            let mut c = k.chars();
+            match c.next() {
+                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                None => String::new(),
+            }
+        }
+    };
+    out.push(key);
+    out.join("+")
 }
 
 // ---------------------------------------------------------------------------
@@ -392,5 +462,15 @@ mod tests {
         assert_eq!(config.crosshair_dash, (1.0, 3.0));
         assert!(config.raw.get("weird_key").is_some());
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn pretty_keystrokes() {
+        assert_eq!(pretty_keystroke("ctrl-c"), "Ctrl+C");
+        assert_eq!(pretty_keystroke("ctrl-shift-s"), "Ctrl+Shift+S");
+        assert_eq!(pretty_keystroke("right"), "→");
+        assert_eq!(pretty_keystroke("escape"), "Esc");
+        assert_eq!(pretty_keystroke("ctrl--"), "Ctrl+-");
+        assert_eq!(pretty_keystroke("delete"), "Delete");
     }
 }

@@ -56,6 +56,7 @@ set ANNOTATION_TOOL_HOME=D:\path\to\Annotation-Tool
 | Duplicate Boxes           | `Ctrl+D`               |
 | Edit Box Class            | `Ctrl+E`               |
 | Undo / Redo               | `Ctrl+Z` / `Ctrl+Y`    |
+| Save Annotations          | `Ctrl+S`               |
 | Select All                | `Ctrl+A`               |
 | Zoom In / Out / Fit       | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` or wheel |
 | Apply / Preview Preset    | tap / hold `Ctrl+1-9`  |
@@ -66,6 +67,15 @@ set ANNOTATION_TOOL_HOME=D:\path\to\Annotation-Tool
 
 All bindings are customizable in Settings → Keybindings (stored in `config.json` using
 the original Tk syntax, so both tools read them).
+
+## Saving
+
+- With **Auto Save** on, the current image is written when you move to another image,
+  every 30 seconds, and on close.
+- With Auto Save off, press `Ctrl+S` (or the toolbar save button). Unsaved edits show as a
+  dot on the save button, a `•` in the window title and a warning in the status bar.
+  Switching image, folder, filter or class preset, or closing the window, asks
+  **Save / Discard / Cancel** first.
 
 ## Project panel
 

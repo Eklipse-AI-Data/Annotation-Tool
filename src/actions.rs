@@ -33,6 +33,7 @@ actions!(
         ToggleFilmstrip,
         OpenImages,
         SetOutputDir,
+        SaveAnnotations,
     ]
 );
 
@@ -74,6 +75,7 @@ pub fn build_keymap(config: &Config) -> Vec<KeyBinding> {
     bindings.push(KeyBinding::new("shift-/", ToggleHelpOverlay, None));
     bindings.push(KeyBinding::new("u", ToggleUnannotatedFilter, None));
     bindings.push(KeyBinding::new("ctrl-a", SelectAllBoxes, None));
+    bindings.push(KeyBinding::new("ctrl-s", SaveAnnotations, None));
     bindings.push(KeyBinding::new("ctrl-shift-o", OpenImages, None));
     bindings.push(KeyBinding::new("ctrl-shift-s", SetOutputDir, None));
 

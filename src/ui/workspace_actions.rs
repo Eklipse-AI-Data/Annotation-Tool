@@ -63,12 +63,12 @@ impl Workspace {
         self.redo_impl(window, cx);
     }
 
-    pub fn open_images_action(&mut self, _: &OpenImages, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_images_dialog(window, cx);
+    pub fn open_images_action(&mut self, _: &OpenImages, _window: &mut Window, cx: &mut Context<Self>) {
+        self.open_images_dialog(cx);
     }
 
-    pub fn set_output_dir_action(&mut self, _: &SetOutputDir, window: &mut Window, cx: &mut Context<Self>) {
-        self.set_output_dir_dialog(window, cx);
+    pub fn set_output_dir_action(&mut self, _: &SetOutputDir, _window: &mut Window, cx: &mut Context<Self>) {
+        self.set_output_dir_dialog(cx);
     }
 
     // ------------------------------------------------------------------
@@ -331,10 +331,14 @@ impl Workspace {
     // Directory / project flows
     // ------------------------------------------------------------------
 
-    pub fn open_images_dialog(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_images_dialog(&mut self, cx: &mut Context<Self>) {
         if self.task_running || matches!(self.modal, Some(Modal::Settings(_))) {
             return;
         }
+        self.guard_unsaved(|ws, cx| ws.open_images_picker(cx), cx);
+    }
+
+    fn open_images_picker(&mut self, cx: &mut Context<Self>) {
         let ws = cx.entity();
         cx.spawn(async move |_this: gpui::WeakEntity<Workspace>, cx: &mut gpui::AsyncApp| {
             let Some(dir) = AsyncFileDialog::new()
@@ -431,9 +435,11 @@ impl Workspace {
             state.boxes.clear();
             state.selected_indices.clear();
             state.image_dir = image_dir;
-            if state.output_dir.is_empty() {
-                state.output_dir = state.image_dir.clone();
-            }
+            // A newly opened folder reads/writes its labels alongside its
+            // images; keeping the previous folder's output dir would load
+            // (and save) annotations from the wrong project. Use "Set output
+            // folder" afterwards to point elsewhere.
+            state.output_dir = state.image_dir.clone();
             state.refresh_preset_scope();
         }
         crate::images::ImageStore::clear_all(cx);
@@ -452,10 +458,14 @@ impl Workspace {
         cx.notify();
     }
 
-    pub fn set_output_dir_dialog(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub fn set_output_dir_dialog(&mut self, cx: &mut Context<Self>) {
         if self.task_running {
             return;
         }
+        self.guard_unsaved(|ws, cx| ws.set_output_dir_picker(cx), cx);
+    }
+
+    fn set_output_dir_picker(&mut self, cx: &mut Context<Self>) {
         let ws = cx.entity();
         cx.spawn(async move |_this: gpui::WeakEntity<Workspace>, cx: &mut gpui::AsyncApp| {
             let Some(dir) = AsyncFileDialog::new()
@@ -496,7 +506,11 @@ impl Workspace {
         .detach();
     }
 
-    pub fn load_recent_project(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub fn load_recent_project(&mut self, cx: &mut Context<Self>) {
+        self.guard_unsaved(|ws, cx| ws.load_recent_project_now(cx), cx);
+    }
+
+    fn load_recent_project_now(&mut self, cx: &mut Context<Self>) {
         let Some(idx) = self.selected_recent else {
             self.alert("Warning", "Please select a valid project.");
             cx.notify();
@@ -604,6 +618,126 @@ impl Workspace {
             strip.set_current(index, count);
             cx.notify();
         });
+        if count > 0 {
+            self.file_list_scroll.scroll_to_item(index, gpui::ScrollStrategy::Center);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Manual save + unsaved-changes guard
+    // ------------------------------------------------------------------
+
+    /// Writes the current image's boxes now. Returns false (and tells the
+    /// user why) when nothing could be saved.
+    pub fn save_now(&mut self, cx: &mut Context<Self>) -> bool {
+        let (index, has_output) = {
+            let s = app_state(cx);
+            (s.current_image_index, !s.output_dir.is_empty())
+        };
+        if index == -1 {
+            return false;
+        }
+        if !has_output {
+            self.alert("Warning", "Set an output folder before saving.");
+            cx.notify();
+            return false;
+        }
+        app_state_mut(cx).save_annotations();
+        if app_state(cx).is_dirty() {
+            let msg = app_state(cx)
+                .class_counts_error
+                .clone()
+                .unwrap_or_else(|| "Could not save annotations.".to_string());
+            self.alert("Save failed", msg);
+            cx.notify();
+            return false;
+        }
+        cx.notify();
+        true
+    }
+
+    pub fn save_annotations_action(&mut self, _: &SaveAnnotations, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal.is_some() || self.task_running || app_state(cx).current_image_index == -1 {
+            return;
+        }
+        if self.save_now(cx) {
+            self.set_status("Saved", cx);
+            self.toast("Saved", cx);
+        }
+    }
+
+    /// Window-close hook. Saves pending edits when Auto Save is on;
+    /// otherwise asks Save / Discard / Cancel and quits from the answer.
+    pub fn should_close(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.task_running {
+            return false;
+        }
+        let (dirty, auto) = {
+            let s = app_state(cx);
+            (s.is_dirty(), s.auto_save)
+        };
+        if dirty && !auto {
+            self.modal = None;
+            self.guard_unsaved(
+                |_ws, cx| {
+                    app_state_mut(cx).save_session();
+                    cx.quit();
+                },
+                cx,
+            );
+            return false;
+        }
+        if dirty {
+            app_state_mut(cx).save_annotations();
+        }
+        app_state_mut(cx).save_session();
+        true
+    }
+
+    /// Runs `then` right away unless the current image has unsaved edits and
+    /// Auto Save is off; in that case asks Save / Discard / Cancel first.
+    /// (With Auto Save on, the follow-up action saves on its own.)
+    pub fn guard_unsaved(
+        &mut self,
+        then: impl Fn(&mut Workspace, &mut Context<Workspace>) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let (dirty, auto, name) = {
+            let s = app_state(cx);
+            let name = s
+                .image_list
+                .get(s.current_image_index.max(0) as usize)
+                .cloned()
+                .unwrap_or_default();
+            (s.is_dirty(), s.auto_save, name)
+        };
+        if !dirty || auto || self.modal.is_some() {
+            then(self, cx);
+            return;
+        }
+        let then = std::rc::Rc::new(then);
+        let then_no = std::rc::Rc::clone(&then);
+        self.modal = Some(Modal::Confirm {
+            title: "Unsaved changes".into(),
+            message: format!(
+                "\"{name}\" has unsaved box changes and Auto Save is off.\n\nSave them before continuing?"
+            ),
+            on_yes: Box::new(move |ws, _window, cx| {
+                if ws.save_now(cx) {
+                    then(ws, cx);
+                }
+            }),
+            on_no: Some(Box::new(move |ws, _window, cx| {
+                {
+                    let s = app_state_mut(cx);
+                    s.boxes = s.saved_boxes.clone();
+                    s.selected_indices.clear();
+                }
+                then_no(ws, cx);
+            })),
+            labels: Some(("Discard".into(), "Save".into())),
+        });
+        cx.notify();
     }
 
     fn preload_neighbors(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -641,7 +775,7 @@ impl Workspace {
         let index = app_state(cx).current_image_index;
         let len = app_state(cx).image_list.len() as i64;
         if index + 1 < len {
-            self.load_image((index + 1) as usize, cx);
+            self.guard_unsaved(move |ws, cx| ws.load_image((index + 1) as usize, cx), cx);
         }
     }
 
@@ -651,7 +785,7 @@ impl Workspace {
         }
         let index = app_state(cx).current_image_index;
         if index - 1 >= 0 {
-            self.load_image((index - 1) as usize, cx);
+            self.guard_unsaved(move |ws, cx| ws.load_image((index - 1) as usize, cx), cx);
         }
     }
 
@@ -877,26 +1011,26 @@ impl Workspace {
         if self.blocked(window, cx) {
             return;
         }
-        self.toggle_unannotated_filter(window, cx);
+        self.toggle_unannotated_filter(cx);
     }
 
-    pub fn toggle_unannotated_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn toggle_unannotated_filter(&mut self, cx: &mut Context<Self>) {
         if self.task_running || self.filter_scan_running {
             return;
         }
         if app_state(cx).unannotated_filter_active {
-            self.clear_image_filter(window, cx);
+            self.clear_image_filter(cx);
             return;
         }
-        self.start_image_filter_scan(None, cx);
+        self.guard_unsaved(|ws, cx| ws.start_image_filter_scan(None, cx), cx);
     }
 
-    pub fn apply_image_filter(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub fn apply_image_filter(&mut self, cx: &mut Context<Self>) {
         if self.task_running || self.filter_scan_running {
             return;
         }
         if let Some(class_id) = self.filter_class_id {
-            self.start_image_filter_scan(Some(class_id), cx);
+            self.guard_unsaved(move |ws, cx| ws.start_image_filter_scan(Some(class_id), cx), cx);
         }
     }
 
@@ -958,10 +1092,14 @@ impl Workspace {
         });
     }
 
-    pub fn clear_image_filter(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub fn clear_image_filter(&mut self, cx: &mut Context<Self>) {
         if self.task_running {
             return;
         }
+        self.guard_unsaved(|ws, cx| ws.clear_image_filter_now(cx), cx);
+    }
+
+    fn clear_image_filter_now(&mut self, cx: &mut Context<Self>) {
         self.save_current_before_list_change(cx);
         {
             let state = app_state_mut(cx);

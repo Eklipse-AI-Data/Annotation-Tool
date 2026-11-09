@@ -607,6 +607,13 @@ impl Render for Canvas {
         let theme = ThemeState::current(cx);
         let state = app_state(cx);
         let has_image = state.current_image_size.is_some();
+        // An image is selected but still decoding: not an empty state.
+        let loading = !has_image && state.current_image_index != -1;
+        let (empty_title, empty_hint) = if state.image_dir.is_empty() {
+            ("No image loaded", "Open an image folder to start annotating —")
+        } else {
+            ("No images to show", "This folder (or the active filter) has no images —")
+        };
         let canvas_entity = cx.entity();
 
         let el: Stateful<gpui::Div> = div()
@@ -615,7 +622,7 @@ impl Render for Canvas {
             .size_full()
             .overflow_hidden()
             .track_focus(&self.focus)
-            .bg(theme.rgb(theme.bg_main))
+            .bg(theme.rgb(theme.bg_canvas))
             .cursor(gpui::CursorStyle::Crosshair)
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -634,6 +641,19 @@ impl Render for Canvas {
 
         if has_image {
             el.into_any_element()
+        } else if loading {
+            el.child(
+                div()
+                    .absolute()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(12.))
+                    .text_color(theme.rgba(theme.fg_muted, 0.8))
+                    .child("Loading image…"),
+            )
+            .into_any_element()
         } else {
             el.child(
                 div()
@@ -665,7 +685,7 @@ impl Render for Canvas {
                             .text_size(px(13.5))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(theme.rgb(theme.fg_text))
-                            .child("No image loaded"),
+                            .child(empty_title),
                     )
                     .child(
                         div()
@@ -676,7 +696,7 @@ impl Render for Canvas {
                                 div()
                                     .text_size(px(11.5))
                                     .text_color(theme.rgb(theme.fg_muted))
-                                    .child("Open a directory to start annotating —"),
+                                    .child(empty_hint),
                             )
                             .child(super::widgets::kbd("Ctrl+Shift+O", theme)),
                     ),

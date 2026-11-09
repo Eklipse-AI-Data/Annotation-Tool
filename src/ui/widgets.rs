@@ -127,16 +127,6 @@ pub fn toolbar_divider(theme: &Theme) -> gpui::Div {
 // Labels
 // ---------------------------------------------------------------------------
 
-/// Small uppercase eyebrow label for section headers.
-pub fn section_label(text: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
-    div()
-        .mb(px(8.))
-        .text_size(px(10.5))
-        .font_weight(gpui::FontWeight::SEMIBOLD)
-        .text_color(theme.rgba(theme.fg_text, 0.55))
-        .child(text.into())
-}
-
 pub fn caption(text: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
     div()
         .text_size(px(11.5))
@@ -155,6 +145,7 @@ pub fn body_text(text: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
 /// Keyboard-key chip, e.g. for shortcut hints.
 pub fn kbd(text: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
     div()
+        .flex_none()
         .px(px(5.))
         .py(px(1.))
         .rounded(px(4.))
@@ -258,7 +249,11 @@ pub fn progress_bar(
 // ---------------------------------------------------------------------------
 
 pub fn panel(theme: &Theme) -> gpui::Div {
+    // `flex()` is required: callers chain `.flex_col()`, which only sets the
+    // direction — without a flex display, `flex_1`/`min_h_0`/scrolling
+    // children never get constrained and spill out of the panel.
     div()
+        .flex()
         .rounded(px(12.))
         .bg(theme.rgb(theme.bg_elevated))
         .border_1()
@@ -266,14 +261,133 @@ pub fn panel(theme: &Theme) -> gpui::Div {
         .shadow_lg()
 }
 
-#[allow(dead_code)]
+/// Opaque full-width 1px line between stacked sections.
 pub fn h_divider(theme: &Theme) -> gpui::Div {
-    div().h(px(0.)).w_full().border_t_1().border_color(theme.rgba(theme.border, 0.7))
+    div().h(px(1.)).w_full().flex_none().bg(theme.rgb(theme.divider))
 }
 
-#[allow(dead_code)]
+/// Opaque 1px vertical line (status-bar segments etc.).
 pub fn v_divider(theme: &Theme) -> gpui::Div {
-    div().w(px(1.)).h_full().bg(theme.rgba(theme.border, 0.7))
+    div().w(px(1.)).h(px(14.)).flex_none().bg(theme.rgb(theme.divider))
+}
+
+/// Header band at the top of a docked pane section: uppercase title on the
+/// chrome tone with an opaque divider below, optional trailing content.
+pub fn pane_header(
+    id: impl Into<gpui::ElementId>,
+    title: impl Into<SharedString>,
+    trailing: Option<gpui::AnyElement>,
+    theme: &Theme,
+) -> Stateful<gpui::Div> {
+    pane_header_inner(id, title.into(), None, trailing, theme)
+}
+
+/// Collapsible [`pane_header`] with a leading chevron; the whole band is the
+/// click target.
+pub fn pane_header_collapsible(
+    id: impl Into<gpui::ElementId>,
+    title: impl Into<SharedString>,
+    expanded: bool,
+    trailing: Option<gpui::AnyElement>,
+    theme: &Theme,
+) -> Stateful<gpui::Div> {
+    let hover = theme.rgba(theme.fg_muted, 0.08);
+    pane_header_inner(id, title.into(), Some(expanded), trailing, theme)
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover))
+}
+
+fn pane_header_inner(
+    id: impl Into<gpui::ElementId>,
+    title: SharedString,
+    expanded: Option<bool>,
+    trailing: Option<gpui::AnyElement>,
+    theme: &Theme,
+) -> Stateful<gpui::Div> {
+    let muted = theme.rgb(theme.fg_muted);
+    let mut left = div().flex().items_center().gap(px(6.)).min_w_0();
+    if let Some(expanded) = expanded {
+        left = left.child(icon(if expanded { "chevron-down" } else { "chevron-right" }, 12.0, muted));
+    }
+    left = left.child(
+        div()
+            .text_size(px(10.5))
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_color(theme.rgba(theme.fg_text, 0.7))
+            .child(title.to_uppercase()),
+    );
+    div()
+        .id(id.into())
+        .h(px(30.))
+        .w_full()
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_between()
+        .px(px(12.))
+        .bg(theme.rgb(theme.bg_chrome))
+        .border_b_1()
+        .border_color(theme.rgb(theme.divider))
+        .child(left)
+        .when_some(trailing, |el, t| {
+            el.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .text_size(px(11.))
+                    .text_color(muted)
+                    .child(t),
+            )
+        })
+}
+
+/// Small borderless text button for pane-header trailing slots.
+pub fn header_link(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    theme: &Theme,
+) -> Stateful<gpui::Div> {
+    let hover = theme.rgba(theme.fg_muted, 0.14);
+    div()
+        .id(id.into())
+        .px(px(6.))
+        .h(px(20.))
+        .flex()
+        .items_center()
+        .rounded(px(4.))
+        .text_size(px(11.))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(theme.rgb(theme.fg_text))
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover))
+        .child(label.into())
+}
+
+/// One tab of a dock tab strip: flush, equal width, accent underline when
+/// active.
+pub fn strip_tab(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    active: bool,
+    theme: &Theme,
+) -> Stateful<gpui::Div> {
+    let hover = theme.rgba(theme.fg_muted, 0.08);
+    div()
+        .id(id.into())
+        .flex_1()
+        .h_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .border_b_2()
+        .border_color(if active { theme.rgb(theme.accent) } else { gpui::transparent_black() })
+        .text_size(px(12.))
+        .font_weight(if active { gpui::FontWeight::SEMIBOLD } else { gpui::FontWeight::MEDIUM })
+        .text_color(if active { theme.rgb(theme.fg_highlight) } else { theme.rgb(theme.fg_muted) })
+        .cursor_pointer()
+        .when(!active, move |el| el.hover(move |s| s.bg(hover)))
+        .child(label.into())
 }
 
 /// One tab of a segmented control.
@@ -293,10 +407,13 @@ pub fn tab(
     div()
         .id(id.into())
         .flex_1()
+        .min_w_0()
+        .px(px(10.))
         .h(px(28.))
         .flex()
         .items_center()
         .justify_center()
+        .whitespace_nowrap()
         .rounded(px(6.))
         .text_size(px(12.))
         .font_weight(if active { gpui::FontWeight::SEMIBOLD } else { gpui::FontWeight::MEDIUM })
@@ -315,37 +432,6 @@ pub fn segmented_control(theme: &Theme) -> gpui::Div {
         .p(px(2.))
         .rounded(px(8.))
         .bg(theme.rgba(theme.fg_muted, 0.1))
-}
-
-/// Collapsible section header: uppercase eyebrow + chevron.
-pub fn collapsible_header(
-    id: impl Into<gpui::ElementId>,
-    title: &'static str,
-    expanded: bool,
-    theme: &Theme,
-) -> Stateful<gpui::Div> {
-    let chevron = if expanded { "chevron-down" } else { "chevron-right" };
-    let muted = theme.rgb(theme.fg_muted);
-    let hover = theme.rgba(theme.fg_muted, 0.1);
-    div()
-        .id(id.into())
-        .flex()
-        .items_center()
-        .gap(px(4.))
-        .h(px(24.))
-        .mx(px(-6.))
-        .px(px(6.))
-        .rounded(px(6.))
-        .cursor_pointer()
-        .hover(move |s| s.bg(hover))
-        .child(icon(chevron, 12.0, muted))
-        .child(
-            div()
-                .text_size(px(10.5))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(muted)
-                .child(title),
-        )
 }
 
 /// Rounded color swatch (class color chip).

@@ -94,11 +94,28 @@ pub fn parse_recent(session: &Map<String, Value>) -> Vec<RecentProject> {
                     map.get("image_dir").and_then(Value::as_str).unwrap_or("").to_string();
                 let output_dir =
                     map.get("output_dir").and_then(Value::as_str).unwrap_or("").to_string();
-                out.push(RecentProject { name, image_dir, output_dir });
+                // Older sessions may hold the same folder spelled with `/`
+                // and `\`; keep only the first (most recent) spelling.
+                let key = normalize_dir(&image_dir);
+                if !out.iter().any(|p: &RecentProject| normalize_dir(&p.image_dir) == key) {
+                    out.push(RecentProject { name, image_dir, output_dir });
+                }
             }
         }
     }
     out
+}
+
+/// Comparison key for a directory path: forward slashes, no trailing slash,
+/// case-insensitive on Windows.
+pub fn normalize_dir(dir: &str) -> String {
+    let unified = dir.trim().replace('\\', "/");
+    let trimmed = unified.trim_end_matches('/');
+    if cfg!(windows) {
+        trimmed.to_lowercase()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// Inserts at the front, dedupes by image_dir, trims to 10, and round-trips
@@ -107,7 +124,8 @@ pub fn parse_recent(session: &Map<String, Value>) -> Vec<RecentProject> {
 pub fn add_recent_project_at(path: &std::path::Path, name: &str, image_dir: &str, output_dir: &str) {
     let mut session = load_session(path);
     let mut recent = parse_recent(&session);
-    recent.retain(|p| p.image_dir != image_dir);
+    let key = normalize_dir(image_dir);
+    recent.retain(|p| normalize_dir(&p.image_dir) != key);
     recent.insert(
         0,
         RecentProject {
@@ -202,5 +220,20 @@ mod tests {
         assert_eq!(recent[0].output_dir, "C:\\out0b");
         assert_eq!(recent[1].image_dir, "C:\\img11");
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn recent_dedupes_across_path_separators() {
+        let dir = std::env::temp_dir().join("at_recent_sep_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.json");
+        std::fs::write(&path, "{}").unwrap();
+        add_recent_project_at(&path, "a", "E:/imgs/a", "E:/imgs/a");
+        add_recent_project_at(&path, "b", "E:/imgs/b", "E:/imgs/b");
+        add_recent_project_at(&path, "a", r"E:\imgs\a\", r"E:\imgs\a");
+        let recent = parse_recent(&load_session(&path));
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].image_dir, r"E:\imgs\a\");
+        assert_eq!(recent[1].name, "b");
     }
 }

@@ -7,6 +7,7 @@
 use gpui::Hsla;
 
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // some legacy tokens are kept for palette completeness
 pub struct Theme {
     pub name: &'static str,
     pub dark: bool,
@@ -49,6 +50,15 @@ pub struct Theme {
 
     pub crosshair: u32,
     pub selected_box: u32,
+
+    /// Image area — the deepest tone, so the picture stands out.
+    pub bg_canvas: u32,
+    /// Docked pane bodies (sidebars, filmstrip).
+    pub bg_pane: u32,
+    /// Toolbar, status bar and pane header bands.
+    pub bg_chrome: u32,
+    /// Opaque 1px divider between panes.
+    pub divider: u32,
 }
 
 impl Theme {
@@ -107,6 +117,10 @@ pub const THEMES: [Theme; 2] = [
         danger: dark_status().4,
         crosshair: dark_status().5,
         selected_box: dark_status().6,
+        bg_canvas: 0x09090B,
+        bg_pane: 0x17171A,
+        bg_chrome: 0x202024,
+        divider: 0x36363C,
     },
     // ------------------------------------------------------------------
     // Light — warm ivory neutrals (Claude-like), single rust accent.
@@ -138,6 +152,10 @@ pub const THEMES: [Theme; 2] = [
         danger: light_status().4,
         crosshair: light_status().5,
         selected_box: light_status().6,
+        bg_canvas: 0xD9D6CD,
+        bg_pane: 0xF6F4EF,
+        bg_chrome: 0xEAE7DF,
+        divider: 0xCAC6BA,
     },
 ];
 

@@ -27,12 +27,12 @@ pub enum SettingsTab {
 impl SettingsTab {
     fn title(self) -> &'static str {
         match self {
-            SettingsTab::Keybindings => "Keybindings",
-            SettingsTab::ClassManagement => "Class Management",
-            SettingsTab::BatchOperations => "Batch Operations",
-            SettingsTab::GamePresets => "Game Presets",
-            SettingsTab::BoxPresets => "Box Presets",
-            SettingsTab::Themes => "Themes",
+            SettingsTab::Keybindings => "Keys",
+            SettingsTab::ClassManagement => "Classes",
+            SettingsTab::BatchOperations => "Batch",
+            SettingsTab::GamePresets => "Games",
+            SettingsTab::BoxPresets => "Box presets",
+            SettingsTab::Themes => "Theme",
         }
     }
 }
@@ -145,11 +145,54 @@ impl Focusable for SettingsView {
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = ThemeState::current(cx);
-        let _ = window;
+
+        let header = div()
+            .flex_none()
+            .h(px(48.))
+            .px(px(20.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .border_b_1()
+            .border_color(theme.rgb(theme.divider))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(super::icons::icon("sliders", 15.0, theme.rgb(theme.fg_muted)))
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(theme.rgb(theme.fg_highlight))
+                            .child("Settings"),
+                    ),
+            )
+            .child(
+                div()
+                    .id("settings-close-x")
+                    .size(px(26.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.14)))
+                    .child(super::icons::icon("x", 14.0, theme.rgb(theme.fg_muted)))
+                    .on_click(cx.listener(|view: &mut SettingsView, _, _, cx| {
+                        view.capture_target = None;
+                        view.workspace.update(cx, |ws, cx| {
+                            ws.modal = None;
+                            cx.notify();
+                        });
+                    })),
+            );
 
         let tab_bar = widgets::segmented_control(theme)
+            .flex_none()
             .mx(px(20.))
-            .mt(px(20.))
+            .mt(px(14.))
             .child(
                 div().flex_1().flex().gap(px(2.)).children(TABS.map(|tab| {
                     widgets::tab(
@@ -179,19 +222,23 @@ impl Render for SettingsView {
 
         widgets::panel(theme)
             .id("settings")
-            .w(px(680.))
-            .h(px(580.))
+            .w(px(700.))
+            .h(px(600.))
+            .max_h(window.viewport_size().height - px(40.))
             .flex_col()
+            .overflow_hidden()
+            .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_capture_key))
+            .child(header)
             .child(tab_bar)
             .child(
                 div()
                     .id("settings-content")
                     .px(px(20.))
                     .py(px(16.))
-                    .mt(px(14.))
+                    .mt(px(12.))
                     .mx(px(20.))
-                    .mb(px(16.))
+                    .mb(px(14.))
                     .flex_1()
                     .min_h_0()
                     .rounded(px(10.))
@@ -201,10 +248,13 @@ impl Render for SettingsView {
             )
             .child(
                 div()
+                    .flex_none()
                     .px(px(20.))
-                    .pb(px(18.))
+                    .py(px(12.))
                     .flex()
                     .justify_end()
+                    .border_t_1()
+                    .border_color(theme.rgb(theme.divider))
                     .child(
                         widgets::button(
                             "settings-save",
@@ -226,12 +276,7 @@ impl SettingsView {
         let theme = ThemeState::current(cx);
         let mut rows = Vec::new();
         for (action_id, label) in BINDABLE_ACTIONS {
-            let binding = app_state(cx)
-                .config
-                .bindings
-                .get(*action_id)
-                .cloned()
-                .unwrap_or_else(|| "—".to_string());
+            let binding = app_state(cx).config.display_binding(action_id);
             let capturing = self.capture_target == Some(*action_id);
             let action_id: &'static str = action_id;
             rows.push(
@@ -260,6 +305,7 @@ impl SettingsView {
             );
         }
         div()
+            .flex()
             .flex_col()
             .gap_1()
             .child(widgets::caption("Click a key to rebind it. Press Escape to cancel capture.", theme))
@@ -269,12 +315,13 @@ impl SettingsView {
 
     fn render_class_management(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = ThemeState::current(cx);
-        let mut list = div().flex_col().gap_0p5().rounded(px(8.)).p(px(4.)).bg(theme.rgba(theme.fg_muted, 0.06));
+        let mut list = div().id("cm-list").max_h(px(260.)).overflow_y_scroll().flex().flex_col().gap_0p5().rounded(px(8.)).p(px(4.)).bg(theme.rgba(theme.fg_muted, 0.06));
         for (i, name) in self.temp_classes.iter().enumerate() {
             let selected = self.temp_selected == Some(i);
             list = list.child(
                 div()
                     .id(("cm-row", i))
+                    .flex_none()
                     .px_2()
                     .h(px(26.))
                     .flex()
@@ -298,6 +345,7 @@ impl SettingsView {
         let ws = self.workspace.clone();
 
         div()
+            .flex()
             .flex_col()
             .gap_2()
             .child(
@@ -387,16 +435,17 @@ impl SettingsView {
         let classes: Vec<(i64, String)> =
             app_state(cx).classes.iter().map(|c| (c.id, c.name.clone())).collect();
 
-        let make_list = || {
-            div().flex_col().rounded(px(8.)).p(px(4.)).bg(theme.rgba(theme.fg_muted, 0.06))
+        let make_list = |id: &'static str| {
+            div().id(id).max_h(px(300.)).overflow_y_scroll().flex().flex_col().rounded(px(8.)).p(px(4.)).bg(theme.rgba(theme.fg_muted, 0.06))
         };
-        let mut old_list = make_list();
-        let mut new_list = make_list();
+        let mut old_list = make_list("batch-old-list");
+        let mut new_list = make_list("batch-new-list");
         for (id, name) in &classes {
             let id = *id;
             old_list = old_list.child(
                 div()
                     .id(("batch-old", id as usize))
+                    .flex_none()
                     .px_2()
                     .h(px(24.))
                     .flex()
@@ -419,6 +468,7 @@ impl SettingsView {
             new_list = new_list.child(
                 div()
                     .id(("batch-new", id as usize))
+                    .flex_none()
                     .px_2()
                     .h(px(24.))
                     .flex()
@@ -444,6 +494,7 @@ impl SettingsView {
         let _new_sel = self.batch_new;
 
         div()
+            .flex()
             .flex_col()
             .gap_2()
             .child(
@@ -492,12 +543,13 @@ impl SettingsView {
 
     fn render_game_presets(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = ThemeState::current(cx);
-        let mut list = div().flex_col().rounded(px(8.)).p(px(4.)).bg(theme.rgba(theme.fg_muted, 0.06));
+        let mut list = div().id("gp-list").max_h(px(320.)).overflow_y_scroll().flex().flex_col().rounded(px(8.)).p(px(4.)).bg(theme.rgba(theme.fg_muted, 0.06));
         for (i, name) in self.preset_files.iter().enumerate() {
             let selected = self.preset_selected == Some(i);
             list = list.child(
                 div()
                     .id(("gp-row", i))
+                    .flex_none()
                     .px_2()
                     .h(px(24.))
                     .flex()
@@ -518,6 +570,7 @@ impl SettingsView {
         let _selected = self.preset_selected;
 
         div()
+            .flex()
             .flex_col()
             .gap_2()
             .child(
@@ -539,7 +592,7 @@ impl SettingsView {
                                 let ws = view.workspace.clone();
                                 ws.update(cx, |ws, cx| {
                                     ws.modal = None;
-                                    ws.load_game_preset(&name, cx);
+                                    ws.guard_unsaved(move |ws, cx| ws.load_game_preset(&name, cx), cx);
                                 });
                                 let _ = window;
                             }),
@@ -602,6 +655,7 @@ impl SettingsView {
         }
 
         div()
+            .flex()
             .flex_col()
             .gap_2()
             .child(
@@ -750,6 +804,7 @@ impl SettingsView {
         }
 
         div()
+            .flex()
             .flex_col()
             .gap(px(14.))
             .child(

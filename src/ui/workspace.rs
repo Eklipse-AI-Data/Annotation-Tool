@@ -5,9 +5,9 @@
 use std::time::Instant;
 
 use gpui::{
-    div, prelude::*, px, uniform_list, App, AppContext, Context, Entity, FocusHandle,
-    Focusable, Hsla, IntoElement, MouseButton, MouseMoveEvent, SharedString, Styled,
-    UniformListScrollHandle, Window,
+    anchored, deferred, div, prelude::*, px, uniform_list, App, AppContext, Context, Entity,
+    FocusHandle, Focusable, Hsla, IntoElement, MouseButton, MouseMoveEvent, Pixels, SharedString,
+    Styled, UniformListScrollHandle, Window,
 };
 
 use crate::state::model::AppState;
@@ -47,6 +47,9 @@ pub enum Modal {
         message: String,
         on_yes: Box<dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>)>,
         on_no: Option<Box<dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>)>>,
+        /// Custom (no, yes) button labels; also adds a separate Cancel
+        /// button that dismisses without running either action.
+        labels: Option<(SharedString, SharedString)>,
     },
     Alert {
         title: SharedString,
@@ -72,6 +75,7 @@ pub struct Workspace {
 
     pub left_tab: LeftTab,
     pub collapse_dirs: bool,
+    pub collapse_counts: bool,
     pub collapse_files: bool,
     pub collapse_classes: bool,
     pub collapse_tools: bool,
@@ -88,6 +92,9 @@ pub struct Workspace {
 
     // Popover/dropdown state
     pub recents_open: bool,
+    /// When a popover was last closed by an outside press; the press that
+    /// closed it must not immediately re-open it via its toggle button.
+    pub popover_closed_at: Option<Instant>,
     pub selected_recent: Option<usize>,
     pub filter_open: bool,
     pub filter_class_id: Option<i64>,
@@ -137,7 +144,8 @@ impl Workspace {
 
         cx.subscribe(&filmstrip, |ws: &mut Workspace, _strip, click: &FilmstripClick, cx| {
             if ws.modal.is_none() {
-                ws.load_image(click.0, cx);
+                let ix = click.0;
+                ws.guard_unsaved(move |ws, cx| ws.load_image(ix, cx), cx);
             }
         })
         .detach();
@@ -152,6 +160,7 @@ impl Workspace {
             box_list_scroll: UniformListScrollHandle::new(),
             left_tab: LeftTab::Project,
             collapse_dirs: true,
+            collapse_counts: true,
             collapse_files: true,
             collapse_classes: true,
             collapse_tools: true,
@@ -165,6 +174,7 @@ impl Workspace {
             task_running: false,
             startup_alerts: Vec::new(),
             recents_open: false,
+            popover_closed_at: None,
             selected_recent: None,
             filter_open: false,
             filter_class_id: None,
@@ -205,6 +215,11 @@ impl Workspace {
         .detach();
     }
 
+    fn popover_just_closed(&self) -> bool {
+        self.popover_closed_at
+            .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(250))
+    }
+
     pub fn set_status(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.status = text.into();
         cx.notify();
@@ -228,6 +243,7 @@ impl Workspace {
             message: message.into(),
             on_yes,
             on_no: None,
+            labels: None,
         });
     }
 
@@ -243,6 +259,7 @@ impl Workspace {
             message: message.into(),
             on_yes,
             on_no: Some(on_no),
+            labels: None,
         });
     }
 
@@ -297,12 +314,15 @@ impl Workspace {
     }
 
     pub fn update_title(&mut self, window: &mut Window, cx: &Context<Self>) {
-        let filename = app_state(cx)
-            .current_image_index
-            .checked_sub(0)
-            .and_then(|i| app_state(cx).image_list.get(i.max(0) as usize).cloned());
+        let state = app_state(cx);
+        let filename = state
+            .image_list
+            .get(state.current_image_index.max(0) as usize)
+            .filter(|_| state.current_image_index != -1)
+            .cloned();
+        let dirty = if state.is_dirty() { "• " } else { "" };
         let title = match filename {
-            Some(name) => format!("Annotation Tool - {name}"),
+            Some(name) => format!("{dirty}Annotation Tool - {name}"),
             None => "Annotation Tool".to_string(),
         };
         if title != self.last_title {
@@ -317,21 +337,48 @@ impl Workspace {
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = ThemeState::current(cx);
-        let show_left = app_state(cx).show_left_sidebar;
-        let show_filmstrip = app_state(cx).show_filmstrip;
-        let show_right = app_state(cx).show_right_sidebar;
+        let state = app_state(cx);
+        let show_left = state.show_left_sidebar;
+        let show_filmstrip = state.show_filmstrip;
+        let show_right = state.show_right_sidebar;
+        let dirty = state.is_dirty();
+        let index = state.current_image_index;
+        let total = state.image_list.len();
+        let filename: SharedString = state
+            .image_list
+            .get(index.max(0) as usize)
+            .filter(|_| index != -1)
+            .cloned()
+            .unwrap_or_default()
+            .into();
 
-        div()
-            .id("toolbar")
-            .h(px(46.))
-            .flex_none()
-            .w_full()
+        let save_btn = div()
+            .relative()
+            .child(widgets::icon_button("tb-save", "save", false, theme).on_click(cx.listener(
+                |ws: &mut Workspace, _, window, cx| {
+                    ws.save_annotations_action(&crate::actions::SaveAnnotations, window, cx)
+                },
+            )))
+            .when(dirty, |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .top(px(4.))
+                        .right(px(4.))
+                        .size(px(8.))
+                        .rounded(px(4.))
+                        .bg(theme.rgb(theme.accent))
+                        .border_1()
+                        .border_color(theme.rgb(theme.bg_chrome)),
+                )
+            });
+
+        let left = div()
+            .flex_1()
+            .min_w_0()
             .flex()
             .items_center()
-            .px(px(10.))
-            .bg(theme.rgb(theme.bg_elevated))
-            .border_b_1()
-            .border_color(theme.rgba(theme.border, 0.8))
+            .gap(px(2.))
             .child(widgets::icon_button("tb-project", "panel-left", show_left, theme).on_click(
                 cx.listener(move |_ws: &mut Workspace, _, _, cx| {
                     let show = app_state(cx).show_left_sidebar;
@@ -340,13 +387,15 @@ impl Workspace {
                 }),
             ))
             .child(widgets::toolbar_divider(theme))
+            .child(save_btn)
             .child(widgets::icon_button("tb-undo", "undo", false, theme).on_click(cx.listener(
                 |ws: &mut Workspace, _, window, cx| ws.undo_impl(window, cx),
             )))
             .child(widgets::icon_button("tb-redo", "redo", false, theme).on_click(cx.listener(
                 |ws: &mut Workspace, _, window, cx| ws.redo_impl(window, cx),
             )))
-            .child(widgets::icon_button("tb-validate", "check-circle", false, theme).on_click(
+            .child(widgets::toolbar_divider(theme))
+            .child(widgets::icon_button("tb-validate", "check-circle", self.validation_visible, theme).on_click(
                 cx.listener(|ws: &mut Workspace, _, window, cx| ws.show_validation(window, cx)),
             ))
             .child(
@@ -363,37 +412,66 @@ impl Workspace {
                     .text_size(px(11.))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(theme.rgb(theme.fg_muted))
-                    .child(
-                        div()
-                            .size(px(6.))
-                            .rounded(px(3.))
-                            .bg(self.indicator_color(theme)),
-                    )
+                    .child(div().size(px(6.)).rounded(px(3.)).bg(self.indicator_color(theme)))
                     .child(self.toolbar_indicator()),
-            )
-            .child(div().flex_1())
-            .child(widgets::button("tb-previous", "Previous", BtnVariant::Default, theme)
-                .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
+            );
+
+        let center = div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .child(widgets::icon_button("tb-previous", "chevron-left", false, theme).on_click(
+                cx.listener(|ws: &mut Workspace, _, window, cx| {
                     ws.prev_image_action(&crate::actions::PrevImage, window, cx)
-                })))
-            .child(div().px(px(8.)).text_size(px(11.)).text_color(theme.rgb(theme.fg_muted))
-                .child(format!("{} / {}",
-                    (app_state(cx).current_image_index + 1).max(0), app_state(cx).image_list.len())))
-            .child(widgets::button("tb-next", "Next", BtnVariant::Default, theme)
-                .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
+                }),
+            ))
+            .child(
+                div()
+                    .min_w(px(72.))
+                    .flex()
+                    .justify_center()
+                    .text_size(px(12.))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.rgb(theme.fg_text))
+                    .child(format!("{} / {}", (index + 1).max(0), total)),
+            )
+            .child(widgets::icon_button("tb-next", "chevron-right", false, theme).on_click(
+                cx.listener(|ws: &mut Workspace, _, window, cx| {
                     ws.next_image_action(&crate::actions::NextImage, window, cx)
-                })))
-            .child(widgets::toolbar_divider(theme))
-            .child(widgets::button("tb-fit", "Fit image", BtnVariant::Default, theme)
-                .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
-                    ws.zoom_reset_action(&crate::actions::ZoomReset, window, cx)
-                })))
+                }),
+            ))
+            .child(
+                div()
+                    .ml(px(8.))
+                    .max_w(px(320.))
+                    .truncate()
+                    .text_size(px(11.5))
+                    .text_color(theme.rgb(theme.fg_muted))
+                    .child(filename),
+            );
+
+        let right = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .justify_end()
+            .gap(px(2.))
+            .child(
+                widgets::button("tb-fit", "Fit image", BtnVariant::Default, theme).on_click(
+                    cx.listener(|ws: &mut Workspace, _, window, cx| {
+                        ws.zoom_reset_action(&crate::actions::ZoomReset, window, cx)
+                    }),
+                ),
+            )
             .child(widgets::icon_button("tb-keys", "keyboard", self.help_visible, theme).on_click(
                 cx.listener(|ws: &mut Workspace, _, _, cx| {
                     ws.help_visible = !ws.help_visible;
                     cx.notify();
                 }),
             ))
+            .child(widgets::toolbar_divider(theme))
             .child(widgets::icon_button("tb-filmstrip", "film", show_filmstrip, theme).on_click(
                 cx.listener(|_ws: &mut Workspace, _, _, cx| {
                     let show = app_state(cx).show_filmstrip;
@@ -407,65 +485,100 @@ impl Workspace {
                     app_state_mut(cx).show_right_sidebar = !show;
                     cx.notify();
                 }),
-            ))
+            ));
+
+        div()
+            .id("toolbar")
+            .h(px(44.))
+            .flex_none()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .px(px(8.))
+            .bg(theme.rgb(theme.bg_chrome))
+            .border_b_1()
+            .border_color(theme.rgb(theme.divider))
+            .child(left)
+            .child(center)
+            .child(right)
             .into_any_element()
     }
 
     fn render_statusbar(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = ThemeState::current(cx);
         let coords = self.canvas.read(cx).coords_text(app_state(cx));
+        let state = app_state(cx);
+        let has_image = state.current_image_index != -1;
+        let dirty = state.is_dirty();
+        let auto = state.auto_save;
+
+        let save_state = div()
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .when(has_image && dirty, |el| {
+                el.text_color(theme.rgb(theme.warning))
+                    .child(div().size(px(6.)).rounded(px(3.)).bg(theme.rgb(theme.warning)))
+                    .child(if auto { "Unsaved changes" } else { "Unsaved changes · Ctrl+S to save" })
+            })
+            .when(has_image && !dirty, |el| {
+                el.child(super::icons::icon("check", 11.0, theme.rgb(theme.success)))
+                    .child("Saved")
+            })
+            .when(!has_image, |el| el.child("No image"));
+
         div()
             .id("statusbar")
-            .h(px(28.))
+            .h(px(26.))
             .flex_none()
             .w_full()
             .flex()
             .items_center()
-            .justify_between()
+            .gap(px(10.))
             .px(px(12.))
-            .bg(theme.rgb(theme.bg_elevated))
+            .bg(theme.rgb(theme.bg_chrome))
             .border_t_1()
-            .border_color(theme.rgba(theme.border, 0.8))
-            .child(
-                div()
-                    .text_size(px(11.))
-                    .text_color(theme.rgb(theme.fg_muted))
-                    .child(self.status.clone()),
-            )
-            .child(
-                div()
-                    .text_size(px(11.))
-                    .text_color(theme.rgb(theme.fg_muted))
-                    .child(coords),
-            )
+            .border_color(theme.rgb(theme.divider))
+            .text_size(px(11.))
+            .text_color(theme.rgb(theme.fg_muted))
+            .child(div().flex_1().min_w_0().truncate().child(self.status.clone()))
+            .child(widgets::v_divider(theme))
+            .child(save_state)
+            .child(widgets::v_divider(theme))
+            .child(div().flex_none().child(if auto { "Auto-save on" } else { "Auto-save off" }))
+            .when(!coords.is_empty(), |el| {
+                el.child(widgets::v_divider(theme)).child(div().flex_none().child(coords))
+            })
             .into_any_element()
     }
 
     fn render_left_sidebar(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = ThemeState::current(cx);
 
-        let tabs = widgets::segmented_control(theme)
-            .mx(px(12.))
-            .mt(px(12.))
-            .mb(px(10.))
-            .child(widgets::tab(
-                "tab-project",
-                "Project",
-                self.left_tab == LeftTab::Project,
-                theme,
-            ).on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
-                ws.left_tab = LeftTab::Project;
-                cx.notify();
-            })))
-            .child(widgets::tab(
-                "tab-classes",
-                "Classes",
-                self.left_tab == LeftTab::Classes,
-                theme,
-            ).on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
-                ws.left_tab = LeftTab::Classes;
-                cx.notify();
-            })));
+        let tabs = div()
+            .h(px(34.))
+            .flex_none()
+            .w_full()
+            .flex()
+            .bg(theme.rgb(theme.bg_chrome))
+            .border_b_1()
+            .border_color(theme.rgb(theme.divider))
+            .child(
+                widgets::strip_tab("tab-project", "Project", self.left_tab == LeftTab::Project, theme)
+                    .on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
+                        ws.left_tab = LeftTab::Project;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                widgets::strip_tab("tab-classes", "Classes", self.left_tab == LeftTab::Classes, theme)
+                    .on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
+                        ws.left_tab = LeftTab::Classes;
+                        cx.notify();
+                    })),
+            );
 
         let body: gpui::AnyElement = match self.left_tab {
             LeftTab::Project => self.render_project_tab(cx),
@@ -479,10 +592,9 @@ impl Workspace {
             .h_full()
             .flex()
             .flex_col()
-            .bg(theme.rgb(theme.bg_sidebar))
+            .bg(theme.rgb(theme.bg_pane))
             .border_r_1()
-            .border_color(theme.rgba(theme.border, 0.8))
-            .shadow_md()
+            .border_color(theme.rgb(theme.divider))
             .child(tabs)
             .child(body)
             .into_any_element()
@@ -494,12 +606,15 @@ impl Workspace {
         let has_folder = !state.image_dir.is_empty();
         let has_output = !state.output_dir.is_empty();
         let dir_path = state.image_dir.clone();
+        let output_path = state.output_dir.clone();
         let dir_name = std::path::Path::new(&dir_path)
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| dir_path.clone());
         let visible_files = state.image_list.len();
         let total_files = state.full_image_list.len();
+        let filter_active = self.filter_class_id.is_some() || state.unannotated_filter_active
+            || visible_files != total_files;
         let loading = state.class_counts_loading;
         let count_error = state.class_counts_error.clone();
         let counts_ready = has_folder && has_output && !loading && count_error.is_none();
@@ -513,7 +628,7 @@ impl Workspace {
             let count = state.class_counts.get(&id).copied().unwrap_or(0);
             div()
                 .id(("folder-class", id as usize))
-                .h(px(28.))
+                .h(px(26.))
                 .w_full()
                 .flex_none()
                 .flex()
@@ -527,55 +642,64 @@ impl Workspace {
                     el.cursor_pointer()
                         .hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1)))
                 })
+                .when(counts_ready && count == 0, |el| el.text_color(theme.rgb(theme.fg_muted)))
                 .child(widgets::color_swatch(class.color, px(10.), theme))
-                .child(div().flex_1().min_w_0().overflow_hidden()
+                .child(div().flex_1().min_w_0().truncate()
                     .child(format!("{}: {}", id, class.name)))
                 .child(div().w(px(48.)).flex_none().text_right()
                     .text_color(theme.rgb(theme.fg_muted))
                     .child(if counts_ready { count.to_string() } else { "...".to_string() }))
-                .on_click(cx.listener(move |ws: &mut Workspace, _, window, cx| {
+                .on_click(cx.listener(move |ws: &mut Workspace, _, _window, cx| {
                     let state = app_state(cx);
                     if !state.class_counts_loading && state.class_counts_error.is_none()
                         && !state.output_dir.is_empty() && !ws.filter_scan_running && !ws.task_running {
                         ws.filter_class_id = Some(id);
                         ws.filter_open = false;
-                        ws.apply_image_filter(window, cx);
+                        ws.apply_image_filter(cx);
                     }
                 }))
                 .into_any_element()
         }).collect();
 
-        let directory = widgets::collapsible_header(
-            "col-dirs", "Folder setup", self.collapse_dirs, theme,
+        // --- Folder -------------------------------------------------------
+        let folder_header = widgets::pane_header_collapsible(
+            "col-dirs", "Folder", self.collapse_dirs, None, theme,
         ).on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
             ws.collapse_dirs = !ws.collapse_dirs;
             cx.notify();
         }));
-        let directory_content = div()
-            .px(px(12.)).pb(px(8.)).flex().flex_col().gap(px(6.))
+        let folder_content = div()
+            .px(px(12.)).py(px(10.)).flex().flex_col().gap(px(6.))
             .flex_none()
-            .child(widgets::button_with_icon(
-                "btn-open-images", "Open image folder", Some("folder-open"), BtnVariant::Accent, theme,
-            ).w_full().on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
-                ws.open_images_dialog(window, cx)
-            })))
-            .child(widgets::button_with_icon(
-                "btn-set-output", "Set output folder", Some("database"), BtnVariant::Default, theme,
-            ).w_full().on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
-                ws.set_output_dir_dialog(window, cx)
-            })))
             .when(has_folder, |el| el.child(
-                div().flex().flex_col().gap(px(2.)).py(px(4.))
+                div().flex().flex_col().gap(px(2.)).pb(px(4.))
                     .child(div().text_size(px(13.)).font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(dir_name))
+                        .truncate().child(dir_name))
                     .child(div().text_size(px(11.)).line_height(px(16.))
-                        .text_color(theme.rgb(theme.fg_muted)).child(dir_path)),
+                        .text_color(theme.rgb(theme.fg_muted)).child(dir_path.clone()))
+                    .when(has_output && output_path != dir_path, |el| el.child(
+                        div().text_size(px(11.)).line_height(px(16.))
+                            .text_color(theme.rgb(theme.fg_muted))
+                            .child(format!("Labels → {output_path}")),
+                    )),
             ))
             .when(!has_folder, |el| el.child(widgets::caption(
                 "Open a folder to browse images and review saved boxes.", theme,
             )))
+            .child(div().flex().gap(px(6.))
+                .child(widgets::button_with_icon(
+                    "btn-open-images", "Open folder", Some("folder-open"), BtnVariant::Accent, theme,
+                ).flex_1().on_click(cx.listener(|ws: &mut Workspace, _, _window, cx| {
+                    ws.open_images_dialog(cx)
+                })))
+                .child(widgets::button_with_icon(
+                    "btn-set-output", "Output", Some("database"), BtnVariant::Default, theme,
+                ).flex_1().on_click(cx.listener(|ws: &mut Workspace, _, _window, cx| {
+                    ws.set_output_dir_dialog(cx)
+                }))))
             .child(self.render_recents_dropdown(cx));
 
+        // --- Saved boxes --------------------------------------------------
         let summary_status = if loading {
             "Counting saved boxes...".to_string()
         } else if !has_folder {
@@ -587,28 +711,37 @@ impl Workspace {
         } else {
             format!("{total_boxes} boxes · {used_classes}/{available_classes} classes used")
         };
-        let summary = div()
-            .px(px(12.)).py(px(8.)).flex().flex_col().gap(px(6.))
+        let counts_header = widgets::pane_header_collapsible(
+            "col-counts",
+            "Saved boxes",
+            self.collapse_counts,
+            Some(
+                widgets::header_link("btn-refresh-counts", "Refresh", theme)
+                    .on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
+                        cx.stop_propagation();
+                        if !app_state(cx).class_counts_loading && !ws.task_running {
+                            ws.refresh_class_counts(cx);
+                        }
+                    }))
+                    .into_any_element(),
+            ),
+            theme,
+        ).on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
+            ws.collapse_counts = !ws.collapse_counts;
+            cx.notify();
+        }));
+        let counts_content = div()
+            .px(px(12.)).py(px(10.)).flex().flex_col().gap(px(6.))
             .flex_none()
-            .border_t_1().border_color(theme.rgba(theme.border, 0.7))
-            .child(div().flex().items_center().justify_between()
-                .child(widgets::section_label("Saved boxes", theme))
-                .child(widgets::button_with_icon(
-                    "btn-refresh-counts", "Refresh", None, BtnVariant::Default, theme,
-                ).on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
-                    if !app_state(cx).class_counts_loading && !ws.task_running {
-                        ws.refresh_class_counts(cx);
-                    }
-                }))))
             .child(div().text_size(px(11.)).line_height(px(16.))
                 .text_color(theme.rgb(if count_error.is_some() { theme.error } else { theme.fg_muted }))
                 .child(summary_status))
             .when(available_classes > 0, |el| el
-                .child(div().flex().justify_between().text_size(px(11.))
+                .child(div().flex().justify_between().px(px(6.)).text_size(px(10.5))
                     .text_color(theme.rgb(theme.fg_muted))
                     .child("Class · click to filter").child("Boxes"))
                 .child(div().id("folder-class-counts").w_full()
-                    .h(px((available_classes as f32 * 28.).min(196.))).flex_none()
+                    .h(px((available_classes as f32 * 26.).min(182.))).flex_none()
                     .overflow_y_scroll().flex().flex_col().children(class_rows)))
             .when(available_classes == 0, |el| el.child(widgets::caption(
                 "Add classes in Settings to see the class list.", theme,
@@ -617,53 +750,61 @@ impl Workspace {
                 "No saved boxes in this folder. Unsaved edits are not counted.", theme,
             )));
 
-        let files_header = widgets::collapsible_header(
-            "col-files", "Files", self.collapse_files, theme,
+        // --- Files --------------------------------------------------------
+        let files_header = widgets::pane_header_collapsible(
+            "col-files",
+            "Files",
+            self.collapse_files,
+            Some(div().child(format!("{visible_files} / {total_files}")).into_any_element()),
+            theme,
         ).on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
             ws.collapse_files = !ws.collapse_files;
             cx.notify();
         }));
         let files_content = div()
-            .px(px(12.)).pb(px(10.)).flex().flex_col().gap(px(6.))
-            .flex_none()
-            .child(div().flex().items_center().justify_between()
-                .child(div().text_size(px(11.)).text_color(theme.rgb(theme.fg_muted))
-                    .child(format!("{visible_files} / {total_files} files visible")))
-                .child(widgets::button_with_icon(
-                    "btn-clear-filter", "Clear filters", None, BtnVariant::Default, theme,
-                ).on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
-                    if !ws.filter_scan_running && !ws.task_running {
-                        app_state_mut(cx).unannotated_filter_active = false;
-                        ws.clear_image_filter(window, cx);
-                    }
-                }))))
-            .child(div().flex().gap(px(6.)).items_center()
-                .child(div().flex_1().min_w_0().child(self.render_filter_dropdown(cx)))
-                .child(widgets::icon_button("btn-filter", "filter", self.filter_class_id.is_some(), theme)
-                    .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
-                        ws.apply_image_filter(window, cx)
-                    }))))
-            .child(widgets::checkbox(
-                "chk-unannotated", "Show unannotated only", app_state(cx).unannotated_filter_active, theme,
-            ).on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
-                ws.toggle_unannotated_filter(window, cx)
-            })))
-            .when(self.filter_scan_running, |el| el.child(widgets::caption("Filtering files...", theme)))
-            .when(visible_files == 0, |el| el.child(widgets::caption(
-                if total_files > 0 { "No files match. Clear filters to show all images." }
-                else if has_folder { "No supported images in this folder. Open another image folder." }
-                else { "Your images will appear here after you open a folder." }, theme,
-            )))
+            .flex_1().min_h_0().flex().flex_col()
+            .child(div()
+                .px(px(12.)).pt(px(10.)).pb(px(6.)).flex().flex_col().gap(px(6.)).flex_none()
+                .child(div().flex().gap(px(6.)).items_center()
+                    .child(div().flex_1().min_w_0().child(self.render_filter_dropdown(cx)))
+                    .child(widgets::icon_button("btn-filter", "filter", self.filter_class_id.is_some(), theme)
+                        .on_click(cx.listener(|ws: &mut Workspace, _, _window, cx| {
+                            ws.apply_image_filter(cx)
+                        }))))
+                .child(div().flex().items_center().justify_between()
+                    .child(widgets::checkbox(
+                        "chk-unannotated", "Unannotated only", app_state(cx).unannotated_filter_active, theme,
+                    ).on_click(cx.listener(|ws: &mut Workspace, _, _window, cx| {
+                        ws.toggle_unannotated_filter(cx)
+                    })))
+                    .when(filter_active, |el| el.child(
+                        widgets::header_link("btn-clear-filter", "Clear filters", theme)
+                            .on_click(cx.listener(|ws: &mut Workspace, _, _window, cx| {
+                                if !ws.filter_scan_running && !ws.task_running {
+                                    ws.clear_image_filter(cx);
+                                }
+                            })),
+                    )))
+                .when(self.filter_scan_running, |el| el.child(widgets::caption("Filtering files...", theme)))
+                .when(visible_files == 0, |el| el.child(widgets::caption(
+                    if total_files > 0 { "No files match. Clear filters to show all images." }
+                    else if has_folder { "No supported images in this folder. Open another image folder." }
+                    else { "Your images will appear here after you open a folder." }, theme,
+                ))))
             .when(visible_files > 0, |el| el.child(
-                div().h(px((visible_files as f32 * 28. + 8.).min(280.)))
-                    .w_full().flex_none().flex().flex_col().child(self.render_file_list(cx)),
+                div().flex_1().min_h_0().w_full().px(px(6.)).pt(px(4.)).pb(px(6.)).flex().flex_col()
+                    .border_t_1().border_color(theme.rgb(theme.divider))
+                    .overflow_hidden()
+                    .child(self.render_file_list(cx)),
             ));
 
-        div().id("project-tab-scroll").flex_1().min_h_0().flex().flex_col()
-            .overflow_y_scroll()
-            .child(directory)
-            .when(self.collapse_dirs, |el| el.child(directory_content))
-            .child(summary)
+        div().id("project-tab").flex_1().min_h_0().flex().flex_col()
+            .child(folder_header)
+            .when(self.collapse_dirs, |el| el.child(folder_content))
+            .child(widgets::h_divider(theme))
+            .child(counts_header)
+            .when(self.collapse_counts, |el| el.child(counts_content))
+            .child(widgets::h_divider(theme))
             .child(files_header)
             .when(self.collapse_files, |el| el.child(files_content))
             .into_any_element()
@@ -672,16 +813,7 @@ impl Workspace {
     fn render_recents_dropdown(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = ThemeState::current(cx);
         let recents = app_state(cx).recent_projects.clone();
-        let selected_label: SharedString = match self.selected_recent {
-            Some(i) if i < recents.len() => recents[i].name.clone().into(),
-            _ => {
-                if recents.is_empty() {
-                    "No recent projects".into()
-                } else {
-                    "Select project…".into()
-                }
-            }
-        };
+        let current_dir = crate::state::session::normalize_dir(&app_state(cx).image_dir);
 
         if recents.is_empty() {
             return div()
@@ -690,32 +822,38 @@ impl Workspace {
                 .into_any_element();
         }
 
-        let chevron = if self.recents_open { "chevron-down" } else { "chevron-right" };
+        let chevron = if self.recents_open { "chevron-up" } else { "chevron-down" };
         let dd_arrow = super::icons::icon(chevron, 13.0, theme.rgb(theme.fg_muted));
 
         let mut dd = div()
             .id("recents-dd")
-            .relative()
             .w_full()
             .child(
                 div()
                     .id("recents-btn")
                     .w_full()
-                    .h(px(32.))
+                    .h(px(30.))
                     .flex()
                     .items_center()
                     .justify_between()
                     .px(px(8.))
-                    .rounded(px(7.))
-                    .bg(theme.rgba(theme.fg_muted, 0.07))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(theme.rgb(theme.divider))
+                    .bg(theme.rgb(theme.entry_bg))
                     .text_size(px(12.))
                     .text_color(theme.rgb(theme.fg_text))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.16)))
-                    .child(selected_label)
+                    .hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.12)))
+                    .child(div().flex().items_center().gap(px(6.))
+                        .child(super::icons::icon("history", 13.0, theme.rgb(theme.fg_muted)))
+                        .child("Recent projects"))
                     .child(dd_arrow)
                     .on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
-                        ws.recents_open = !ws.recents_open;
+                        if !ws.popover_just_closed() {
+                            ws.recents_open = !ws.recents_open;
+                            ws.filter_open = false;
+                        }
                         cx.notify();
                     })),
             );
@@ -723,51 +861,45 @@ impl Workspace {
         if self.recents_open {
             let mut rows = Vec::new();
             for (i, p) in recents.iter().enumerate() {
+                let is_current = crate::state::session::normalize_dir(&p.image_dir) == current_dir;
                 rows.push(
                     div()
                         .id(("recent", i))
-                        .px(px(10.))
-                        .h(px(30.))
+                        .flex_none()
+                        .px(px(8.))
+                        .py(px(5.))
                         .flex()
                         .items_center()
                         .gap(px(8.))
                         .rounded(px(6.))
-                        .text_size(px(12.))
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1)))
-                        .child(super::icons::icon("history", 13.0, theme.rgb(theme.fg_muted)))
-                        .child(p.name.clone())
-                        .on_click({
-                            cx.listener(move |ws: &mut Workspace, _, window, cx| {
-                                ws.selected_recent = Some(i);
-                                ws.recents_open = false;
-                                ws.load_recent_project(window, cx);
-                            })
-                        })
+                        .hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.12)))
+                        .child(div().w(px(14.)).flex_none().when(is_current, |el| {
+                            el.child(super::icons::icon("check", 13.0, theme.rgb(theme.accent)))
+                        }))
+                        .child(
+                            div().flex_1().min_w_0().flex().flex_col()
+                                .child(div().text_size(px(12.)).truncate()
+                                    .font_weight(if is_current { gpui::FontWeight::SEMIBOLD } else { gpui::FontWeight::NORMAL })
+                                    .child(p.name.clone()))
+                                .child(div().text_size(px(10.5)).truncate()
+                                    .text_color(theme.rgb(theme.fg_muted))
+                                    .child(p.image_dir.clone())),
+                        )
+                        .on_click(cx.listener(move |ws: &mut Workspace, _, _window, cx| {
+                            ws.selected_recent = Some(i);
+                            ws.recents_open = false;
+                            ws.load_recent_project(cx);
+                        }))
                         .into_any_element(),
                 );
             }
-            dd = dd.child(
-                div()
-                    .id("recents-popover")
-                    .absolute()
-                    .top(px(34.))
-                    .left_0()
-                    .right_0()
-                    .rounded(px(10.))
-                    .bg(theme.rgb(theme.bg_elevated))
-                    .border_1()
-                    .border_color(theme.rgba(theme.border, 1.0))
-                    .shadow_lg()
-                    .p(px(4.))
-                    .max_h(px(200.))
-                    .overflow_y_scroll()
-                    .on_mouse_down_out(cx.listener(|ws: &mut Workspace, _, _, cx| {
-                        ws.recents_open = false;
-                        cx.notify();
-                    }))
-                    .children(rows),
-            );
+            dd = dd.child(popover("recents-popover", px(268.), px(280.), theme, rows,
+                cx.listener(|ws: &mut Workspace, _, _, cx| {
+                    ws.recents_open = false;
+                    ws.popover_closed_at = Some(Instant::now());
+                    cx.notify();
+                })));
         }
 
         dd.into_any_element()
@@ -776,36 +908,43 @@ impl Workspace {
     fn render_filter_dropdown(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = ThemeState::current(cx);
         let classes = app_state(cx).classes.clone();
-        let label: SharedString = match self.filter_class_id {
-            Some(id) => match classes.iter().find(|c| c.id == id) {
-                Some(c) => format!("{}: {}", c.id, c.name).into(),
-                None => "Filter by class…".into(),
-            },
+        let selected = self.filter_class_id.and_then(|id| classes.iter().find(|c| c.id == id));
+        let label: SharedString = match selected {
+            Some(c) => format!("{}: {}", c.id, c.name).into(),
             None => "Filter by class…".into(),
         };
+        let swatch = selected.map(|c| c.color);
 
-        let chevron = if self.filter_open { "chevron-down" } else { "chevron-right" };
+        let chevron = if self.filter_open { "chevron-up" } else { "chevron-down" };
         let dd_arrow = super::icons::icon(chevron, 13.0, theme.rgb(theme.fg_muted));
 
-        let mut dd = div().id("filter-dd").relative().w_full().child(
+        let mut dd = div().id("filter-dd").w_full().child(
             div()
                 .id("filter-btn")
                 .w_full()
-                .h(px(32.))
+                .h(px(30.))
                 .flex()
                 .items_center()
                 .justify_between()
+                .gap(px(6.))
                 .px(px(8.))
-                .rounded(px(7.))
-                .bg(theme.rgba(theme.fg_muted, 0.07))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(theme.rgb(theme.divider))
+                .bg(theme.rgb(theme.entry_bg))
                 .text_size(px(12.))
-                .text_color(theme.rgb(theme.fg_text))
+                .text_color(if selected.is_some() { theme.rgb(theme.fg_text) } else { theme.rgb(theme.fg_muted) })
                 .cursor_pointer()
-                .hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.16)))
-                .child(label)
+                .hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.12)))
+                .child(div().flex_1().min_w_0().flex().items_center().gap(px(8.))
+                    .when_some(swatch, |el, color| el.child(widgets::color_swatch(color, px(10.), theme)))
+                    .child(div().min_w_0().truncate().child(label)))
                 .child(dd_arrow)
                 .on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
-                    ws.filter_open = !ws.filter_open;
+                    if !ws.popover_just_closed() {
+                        ws.filter_open = !ws.filter_open;
+                        ws.recents_open = false;
+                    }
                     cx.notify();
                 })),
         );
@@ -814,20 +953,23 @@ impl Workspace {
             let mut rows = Vec::new();
             for c in &classes {
                 let id = c.id;
+                let is_selected = self.filter_class_id == Some(id);
                 rows.push(
                     div()
                         .id(("filter-class", id as usize))
-                        .px(px(10.))
-                        .h(px(30.))
+                        .flex_none()
+                        .px(px(8.))
+                        .h(px(28.))
                         .flex()
                         .items_center()
                         .gap(px(8.))
                         .rounded(px(6.))
                         .text_size(px(12.))
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1)))
+                        .when(is_selected, |el| el.bg(theme.selection_bg()))
+                        .hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.12)))
                         .child(widgets::color_swatch(c.color, px(10.0), theme))
-                        .child(format!("{}: {}", c.id, c.name))
+                        .child(div().min_w_0().truncate().child(format!("{}: {}", c.id, c.name)))
                         .on_click(cx.listener(move |ws: &mut Workspace, _, _, cx| {
                             ws.filter_class_id = Some(id);
                             ws.filter_open = false;
@@ -836,27 +978,12 @@ impl Workspace {
                         .into_any_element(),
                 );
             }
-            dd = dd.child(
-                div()
-                    .id("filter-popover")
-                    .absolute()
-                    .top(px(34.))
-                    .left_0()
-                    .right_0()
-                    .rounded(px(10.))
-                    .bg(theme.rgb(theme.bg_elevated))
-                    .border_1()
-                    .border_color(theme.rgba(theme.border, 1.0))
-                    .shadow_lg()
-                    .p(px(4.))
-                    .max_h(px(240.))
-                    .overflow_y_scroll()
-                    .on_mouse_down_out(cx.listener(|ws: &mut Workspace, _, _, cx| {
-                        ws.filter_open = false;
-                        cx.notify();
-                    }))
-                    .children(rows),
-            );
+            dd = dd.child(popover("filter-popover", px(232.), px(300.), theme, rows,
+                cx.listener(|ws: &mut Workspace, _, _, cx| {
+                    ws.filter_open = false;
+                    ws.popover_closed_at = Some(Instant::now());
+                    cx.notify();
+                })));
         }
 
         dd.into_any_element()
@@ -869,7 +996,8 @@ impl Workspace {
         let on_click = std::rc::Rc::new(cx.listener({
             move |ws: &mut Workspace, ix: &usize, _window, cx| {
                 if ws.modal.is_none() {
-                    ws.load_image(*ix, cx);
+                    let ix = *ix;
+                    ws.guard_unsaved(move |ws, cx| ws.load_image(ix, cx), cx);
                 }
             }
         }));
@@ -883,12 +1011,12 @@ impl Workspace {
                 rows.push(
                     div()
                         .id(("file-row", ix))
-                        .px(px(10.))
-                        .h(px(28.))
+                        .px(px(8.))
+                        .h(px(26.))
                         .w_full()
                         .flex()
                         .items_center()
-                        .rounded(px(6.))
+                        .rounded(px(5.))
                         .text_size(px(12.))
                         .cursor_pointer()
                         .when(is_current, |el| {
@@ -897,7 +1025,7 @@ impl Workspace {
                                 .text_color(theme.rgb(theme.fg_highlight))
                         })
                         .when(!is_current, |el| el.hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1))))
-                        .child(filename.clone())
+                        .child(div().min_w_0().truncate().child(filename.clone()))
                         .on_click({
                             let on_click = std::rc::Rc::clone(&on_click);
                             move |_, window, cx| on_click(&ix, window, cx)
@@ -919,35 +1047,40 @@ impl Workspace {
         let theme = ThemeState::current(cx);
         let show_labels = app_state(cx).show_labels;
         let auto_save = app_state(cx).auto_save;
+        let class_count = app_state(cx).classes.len();
 
-        let classes_header = div().child(widgets::collapsible_header(
+        let classes_header = widgets::pane_header_collapsible(
             "col-classes",
-            "CLASS LIST",
+            "Classes",
             self.collapse_classes,
+            Some(div().child(class_count.to_string()).into_any_element()),
             theme,
         ).on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
             ws.collapse_classes = !ws.collapse_classes;
             cx.notify();
-        })));
+        }));
 
         let classes_content = div()
-            .px(px(12.))
-            .pb(px(16.))
+            .flex_1()
+            .min_h_0()
+            .px(px(10.))
+            .py(px(10.))
             .flex()
             .flex_col()
             .gap(px(8.))
-            .child(self.class_search.clone())
-            .child(self.render_class_list(cx));
+            .child(div().flex_none().child(self.class_search.clone()))
+            .child(div().flex_1().min_h_0().flex().flex_col().overflow_hidden().child(self.render_class_list(cx)));
 
-        let tools_header = div().child(widgets::collapsible_header(
+        let tools_header = widgets::pane_header_collapsible(
             "col-tools",
-            "TOOLS",
+            "Tools",
             self.collapse_tools,
+            None,
             theme,
         ).on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
             ws.collapse_tools = !ws.collapse_tools;
             cx.notify();
-        })));
+        }));
 
         let quiet_button = |id: &'static str,
                             label: &'static str,
@@ -960,12 +1093,11 @@ impl Workspace {
             div()
                 .id(id)
                 .w_full()
-                .h(px(30.))
+                .h(px(28.))
                 .flex()
                 .items_center()
                 .gap(px(8.))
                 .px(px(8.))
-                .mx(px(-8.))
                 .rounded(px(6.))
                 .text_size(px(12.))
                 .text_color(fg)
@@ -976,11 +1108,12 @@ impl Workspace {
         };
 
         let tools_content = div()
-            .px(px(12.))
-            .pb(px(16.))
+            .flex_none()
+            .px(px(6.))
+            .py(px(8.))
             .flex()
             .flex_col()
-            .gap(px(2.))
+            .gap(px(1.))
             .child(
                 quiet_button("btn-copy", "Copy Boxes", "copy", theme).on_click(cx.listener(
                     |ws: &mut Workspace, _, window, cx| ws.copy_boxes_impl(window, cx),
@@ -1005,44 +1138,47 @@ impl Workspace {
                     }),
                 ),
             )
-            .child(div().h(px(6.)))
+            .child(div().mx(px(8.)).my(px(6.)).child(widgets::h_divider(theme)))
             .child(
-                widgets::checkbox("chk-autosave", "Auto Save", auto_save, theme).on_click(
-                    cx.listener(|_ws: &mut Workspace, _, _, cx| {
-                        let v = app_state(cx).auto_save;
-                        app_state_mut(cx).auto_save = !v;
-                        cx.notify();
-                    }),
-                ),
-            )
-            .child(
-                widgets::checkbox("chk-labels", "Show Labels", show_labels, theme).on_click(
-                    cx.listener(|_ws: &mut Workspace, _, _, cx| {
-                        let v = app_state(cx).show_labels;
-                        app_state_mut(cx).show_labels = !v;
-                        cx.notify();
-                    }),
-                ),
+                div().px(px(8.)).flex().flex_col()
+                    .child(
+                        widgets::checkbox("chk-autosave", "Auto Save", auto_save, theme).on_click(
+                            cx.listener(|_ws: &mut Workspace, _, _, cx| {
+                                let v = app_state(cx).auto_save;
+                                app_state_mut(cx).auto_save = !v;
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(
+                        widgets::checkbox("chk-labels", "Show Labels", show_labels, theme).on_click(
+                            cx.listener(|_ws: &mut Workspace, _, _, cx| {
+                                let v = app_state(cx).show_labels;
+                                app_state_mut(cx).show_labels = !v;
+                                cx.notify();
+                            }),
+                        ),
+                    ),
             );
 
         div()
-            .id("classes-tab-scroll")
+            .id("classes-tab")
             .flex_1()
             .min_h_0()
             .flex()
             .flex_col()
-            .overflow_y_scroll()
-            .gap(px(12.))
-            .pt(px(2.))
             .child(classes_header)
             .when(self.collapse_classes, |el| el.child(classes_content))
+            .child(widgets::h_divider(theme))
             .child(tools_header)
             .when(self.collapse_tools, |el| el.child(tools_content))
-            .child(div().flex_1())
+            .when(!self.collapse_classes, |el| el.child(div().flex_1()))
+            .child(widgets::h_divider(theme))
             .child(
                 div()
-                    .px(px(12.))
-                    .pb(px(12.))
+                    .flex_none()
+                    .p(px(10.))
+                    .bg(theme.rgb(theme.bg_chrome))
                     .child(
                         widgets::button_with_icon(
                             "btn-settings",
@@ -1083,11 +1219,10 @@ impl Workspace {
             )).into_any_element();
         }
 
-        let on_click = std::rc::Rc::new(cx.listener(move |ws: &mut Workspace, ix: &usize, _window, cx| {
+        let on_click = std::rc::Rc::new(cx.listener(move |_ws: &mut Workspace, ix: &usize, _window, cx| {
             if let Some(c) = app_state(cx).classes.get(*ix) {
                 app_state_mut(cx).current_class_index = c.id;
                 cx.notify();
-                let _ = ws;
             }
         }));
 
@@ -1102,7 +1237,7 @@ impl Workspace {
                     div()
                         .id(("class-row", rix))
                         .px(px(8.))
-                        .h(px(30.))
+                        .h(px(28.))
                         .w_full()
                         .flex()
                         .items_center()
@@ -1117,7 +1252,7 @@ impl Workspace {
                         })
                         .when(!is_current, |el| el.hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1))))
                         .child(widgets::color_swatch(*color, px(11.0), theme))
-                        .child(div().flex_1().min_w_0().overflow_hidden().child(label))
+                        .child(div().flex_1().min_w_0().truncate().child(label))
                         .child(div().w(px(48.)).flex_none().text_right()
                             .text_color(theme.rgb(theme.fg_muted))
                             .child(if counts_ready { n.to_string() } else { "...".to_string() }))
@@ -1132,30 +1267,36 @@ impl Workspace {
         })
         .track_scroll(self.class_list_scroll.clone())
         .w_full()
-        .h(px((count as f32 * 30.).min(300.)))
-        .flex_none()
+        .h_full()
+        .flex_1()
+        .min_h_0()
         .into_any_element()
     }
 
     fn render_right_sidebar(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = ThemeState::current(cx);
         let state = app_state(cx);
-        let boxes: Vec<(usize, String)> = state
+        let boxes: Vec<(usize, String, Option<(u8, u8, u8)>)> = state
             .boxes
             .iter()
             .enumerate()
             .map(|(i, b)| {
-                let name = state
-                    .classes
-                    .iter()
-                    .find(|c| c.id == b.class_id)
-                    .map(|c| c.name.clone())
-                    .unwrap_or_else(|| "Unknown".to_string());
-                (i, name)
+                let class = state.classes.iter().find(|c| c.id == b.class_id);
+                (
+                    i,
+                    class.map(|c| c.name.clone()).unwrap_or_else(|| "Unknown".to_string()),
+                    class.map(|c| c.color),
+                )
             })
             .collect();
         let selected = state.selected_indices.clone();
         let count = boxes.len();
+        let has_image = state.current_image_index != -1;
+        let header_trailing = if selected.is_empty() {
+            count.to_string()
+        } else {
+            format!("{} selected · {count}", selected.len())
+        };
 
         let on_row_down = std::rc::Rc::new(cx.listener(
             move |ws: &mut Workspace, (ix, event): &(usize, gpui::MouseDownEvent), _window, cx| {
@@ -1194,18 +1335,19 @@ impl Workspace {
         let list = uniform_list("box-list", count, move |range, _window, _cx| {
             let mut rows = Vec::new();
             for ix in range {
-                let (i, name) = &boxes[ix];
+                let (i, name, color) = &boxes[ix];
                 let i = *i;
                 let name = name.clone();
                 let is_selected = selected.contains(&i);
                 rows.push(
                     div()
                         .id(("box-row", ix))
-                        .px(px(10.))
+                        .px(px(8.))
                         .h(px(28.))
                         .w_full()
                         .flex()
                         .items_center()
+                        .gap(px(8.))
                         .rounded(px(6.))
                         .text_size(px(12.))
                         .cursor_pointer()
@@ -1215,7 +1357,13 @@ impl Workspace {
                                 .text_color(theme.rgb(theme.fg_highlight))
                         })
                         .when(!is_selected, |el| el.hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1))))
-                        .child(format!("{}: {}", i, name))
+                        .child(match color {
+                            Some(c) => widgets::color_swatch(*c, px(11.), theme).into_any_element(),
+                            None => div().size(px(11.)).flex_none().rounded(px(3.5)).border_1()
+                                .border_color(theme.rgb(theme.fg_muted)).into_any_element(),
+                        })
+                        .child(div().w(px(22.)).flex_none().text_color(theme.rgb(theme.fg_muted)).child(i.to_string()))
+                        .child(div().flex_1().min_w_0().truncate().child(name))
                         .on_mouse_down(
                             MouseButton::Left,
                             {
@@ -1240,95 +1388,117 @@ impl Workspace {
         .flex_1()
         .min_h_0();
 
+
         div()
             .id("right-sidebar")
             .w(px(256.))
             .flex_none()
             .h_full()
-            .relative()
-            .p(px(12.))
-            .bg(theme.rgb(theme.bg_sidebar))
+            .flex()
+            .flex_col()
+            .bg(theme.rgb(theme.bg_pane))
             .border_l_1()
-            .border_color(theme.rgba(theme.border, 0.8))
-            .shadow_md()
-            .child(
-                // List fills the sidebar; header overlays the top band.
-                div().h_full().w_full().pt(px(26.)).flex().flex_col().child(list),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .top(px(10.))
-                    .left(px(12.))
-                    .right(px(12.))
-                    .flex()
-                    .items_baseline()
-                    .justify_between()
-                    .child(widgets::section_label("BOXES", theme))
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(theme.rgb(theme.fg_muted))
-                            .child(format!("{count}")),
-                    ),
-            )
+            .border_color(theme.rgb(theme.divider))
+            .child(div().h(px(34.)).flex_none().flex().items_center().px(px(12.))
+                .bg(theme.rgb(theme.bg_chrome))
+                .border_b_1()
+                .border_color(theme.rgb(theme.divider))
+                .text_size(px(12.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme.rgb(theme.fg_highlight))
+                .child("Annotations"))
+            .child(widgets::pane_header(
+                "hdr-boxes",
+                "Boxes",
+                Some(div().child(header_trailing).into_any_element()),
+                theme,
+            ))
+            .when(count == 0, |el| {
+                el.child(div().p(px(12.)).child(widgets::caption(
+                    if has_image { "No boxes on this image yet. Pick a class, then drag on the canvas." }
+                    else { "Open an image to see its boxes." },
+                    theme,
+                )))
+            })
+            .when(count > 0, |el| {
+                el.child(div().flex_1().min_h_0().p(px(6.)).flex().flex_col().overflow_hidden().child(list))
+            })
             .into_any_element()
     }
 
     fn render_help_overlay(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = ThemeState::current(cx);
-        let sections: &[(&str, &[(&str, &str)])] = &[
+        let cfg = &app_state(cx).config;
+        let b = |id: &str| cfg.display_binding(id);
+        // Left/Right always navigate in addition to the configured keys.
+        let nav = |id: &str, fixed: &str| {
+            let k = cfg.display_binding(id);
+            if k == fixed { k } else { format!("{k} / {fixed}") }
+        };
+        let sections: Vec<(&str, Vec<(String, &str)>)> = vec![
             (
                 "NAVIGATION",
-                &[
-                    ("A / ←", "Previous Image"),
-                    ("D / →", "Next Image"),
-                    ("↓", "Cycle Class"),
-                    ("Escape", "Deselect Class"),
+                vec![
+                    (nav("prev_image", "←"), "Previous Image"),
+                    (nav("next_image", "→"), "Next Image"),
+                    (b("cycle_class"), "Cycle Class"),
+                    (b("deselect"), "Deselect Class / Close"),
                 ],
             ),
             (
                 "EDITING",
-                &[
-                    ("Click + Drag", "Draw Box"),
-                    ("Click", "Stamp Template Box"),
-                    ("Q / Delete", "Delete Selected"),
-                    ("Ctrl+A", "Select All Boxes"),
-                    ("Ctrl+C", "Copy Boxes"),
-                    ("Space / Ctrl+V", "Paste Boxes"),
-                    ("Ctrl+D", "Duplicate Boxes"),
-                    ("Ctrl+E", "Edit Box Class"),
+                vec![
+                    ("Click + Drag".into(), "Draw Box"),
+                    ("Click".into(), "Stamp Template Box"),
+                    ("Shift + Click".into(), "Add to Selection"),
+                    (b("delete_box"), "Delete Selected"),
+                    ("Ctrl+A".into(), "Select All Boxes"),
+                    (b("copy"), "Copy Boxes"),
+                    (b("paste"), "Paste Boxes"),
+                    (b("duplicate"), "Duplicate Boxes"),
+                    (b("edit_class"), "Edit Box Class"),
                 ],
             ),
-            ("HISTORY", &[("Ctrl+Z", "Undo"), ("Ctrl+Y", "Redo")]),
+            (
+                "FILE & HISTORY",
+                vec![
+                    ("Ctrl+S".into(), "Save Annotations"),
+                    (b("undo"), "Undo"),
+                    (b("redo"), "Redo"),
+                    ("Ctrl+Shift+O".into(), "Open Image Folder"),
+                    ("Ctrl+Shift+S".into(), "Set Output Folder"),
+                ],
+            ),
             (
                 "VIEW",
-                &[
-                    ("Mouse Wheel", "Zoom In/Out"),
-                    ("Ctrl + / -", "Zoom In/Out"),
-                    ("Ctrl+0", "Fit to Window"),
-                    ("Right Click + Drag", "Pan"),
-                    ("U", "Toggle Unannotated Filter"),
-                    ("?", "Toggle This Overlay"),
+                vec![
+                    ("Mouse Wheel".into(), "Zoom In/Out"),
+                    ("Ctrl + / -".into(), "Zoom In/Out"),
+                    ("Ctrl+0".into(), "Fit to Window"),
+                    ("Right Click + Drag".into(), "Pan"),
+                    ("U".into(), "Toggle Unannotated Filter"),
+                    ("?".into(), "Toggle This Overlay"),
                 ],
             ),
             (
                 "PRESETS",
-                &[
-                    ("Tap Ctrl+1-9", "Apply Box Preset"),
-                    ("Hold Ctrl+1-9", "Preview Box Preset"),
-                    ("Ctrl+Shift+1-9", "Save Box Preset"),
+                vec![
+                    ("Tap Ctrl+1-9".into(), "Apply Box Preset"),
+                    ("Hold Ctrl+1-9".into(), "Preview Box Preset"),
+                    ("Ctrl+Shift+1-9".into(), "Save Box Preset"),
                 ],
             ),
         ];
 
         let mut columns: Vec<gpui::AnyElement> = Vec::new();
-        for col_sections in [&sections[0..3.min(sections.len())], &sections[3.min(sections.len())..]] {
-            let mut col = div().flex_col().gap(px(20.));
+        let split = 2.min(sections.len());
+        for col_sections in [&sections[..split], &sections[split..]] {
+            let mut col = div().flex().flex_col().gap(px(18.));
             for (name, rows) in col_sections.iter() {
-                let mut section = div().flex_col().gap(px(6.));
+                let mut section = div().flex().flex_col().gap(px(6.));
                 section = section.child(
                     div()
+                        .pb(px(2.))
                         .text_size(px(10.5))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(theme.rgb(theme.fg_muted))
@@ -1344,7 +1514,8 @@ impl Workspace {
                                 div()
                                     .w(px(128.))
                                     .flex_none()
-                                    .child(widgets::kbd(*key, theme)),
+                                    .flex()
+                                    .child(widgets::kbd(key.clone(), theme)),
                             )
                             .child(
                                 div()
@@ -1361,10 +1532,11 @@ impl Workspace {
 
         widgets::panel(theme)
             .id("help-overlay")
-            .w(px(680.))
+            .w(px(700.))
             .p(px(28.))
             .flex_col()
-            .gap(px(24.))
+            .gap(px(22.))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
                     .flex()
@@ -1389,7 +1561,7 @@ impl Workspace {
                     div()
                         .text_size(px(11.5))
                         .text_color(theme.rgb(theme.fg_muted))
-                        .child("or the toolbar keys button closes this overlay"),
+                        .child("or click outside to close · configurable keys follow Settings → Keys"),
                 ),
             )
             .into_any_element()
@@ -1411,9 +1583,16 @@ impl Workspace {
 
         let panel: gpui::AnyElement = match modal {
             Modal::Settings(view) => view.clone().into_any_element(),
-            Modal::Confirm { title, message, .. } => {
+            Modal::Confirm { title, message, on_no, labels, .. } => {
                 let title = title.clone();
                 let message = message.clone();
+                // Yes/No prompts (with an on_no action) vs. plain confirmations.
+                let three_way = labels.is_some();
+                let (no_label, yes_label): (SharedString, SharedString) = match labels {
+                    Some((no, yes)) => (no.clone(), yes.clone()),
+                    None if on_no.is_some() => ("No".into(), "Yes".into()),
+                    None => ("Cancel".into(), "Confirm".into()),
+                };
                 type Action = Box<dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>)>;
                 let run = cx.listener(move |ws: &mut Workspace, _, window, cx| {
                     let on_yes: Option<Action> = match ws.modal.take() {
@@ -1464,8 +1643,18 @@ impl Workspace {
                             .justify_end()
                             .gap(px(8.))
                             .mt(px(4.))
+                            .when(three_way, |el| {
+                                el.child(
+                                    widgets::button("confirm-cancel", "Cancel", BtnVariant::Default, theme)
+                                        .on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
+                                            ws.modal = None;
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(div().flex_1())
+                            })
                             .child(
-                                widgets::button("confirm-no", "Cancel", BtnVariant::Default, theme)
+                                widgets::button("confirm-no", no_label, if three_way { BtnVariant::Danger } else { BtnVariant::Default }, theme)
                                     .on_click(cx.listener(|ws: &mut Workspace, _, window, cx| {
                                         let on_no = match ws.modal.take() {
                                             Some(Modal::Confirm { on_no, .. }) => on_no,
@@ -1479,7 +1668,7 @@ impl Workspace {
                                     })),
                             )
                             .child(
-                                widgets::button("confirm-yes", "Confirm", BtnVariant::Accent, theme)
+                                widgets::button("confirm-yes", yes_label, BtnVariant::Accent, theme)
                                     .on_click(run),
                             ),
                     )
@@ -1615,7 +1804,13 @@ impl Workspace {
             .justify_center()
             .bg(gpui::black().opacity(0.45))
             .on_mouse_down(MouseButton::Left, backdrop_click)
-            .child(panel)
+            .child(
+                // Swallow presses inside the panel so they don't bubble to the
+                // backdrop and dismiss the modal before buttons get on_click.
+                div()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(panel),
+            )
             .into_any_element()
     }
 
@@ -1659,8 +1854,8 @@ impl Workspace {
         widgets::panel(theme)
             .id("validation-panel")
             .absolute()
-            .top(px(58.))
-            .right(px(268.))
+            .top(px(12.))
+            .right(px(12.))
             .w(px(380.))
             .max_h(px(440.))
             .p(px(16.))
@@ -1724,7 +1919,7 @@ impl Workspace {
             .collect();
         div()
             .absolute()
-            .bottom(px(36.0 + STRIP_H))
+            .bottom(px(16.))
             .left_0()
             .right_0()
             .flex()
@@ -1774,6 +1969,7 @@ impl Render for Workspace {
             .size_full()
             .flex()
             .flex_col()
+            .bg(theme.rgb(theme.bg_pane))
             .text_size(px(12.5))
             .text_color(theme.rgb(theme.fg_text))
             .track_focus(&self.focus)
@@ -1796,6 +1992,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_unannotated_action))
             .on_action(cx.listener(Self::open_images_action))
             .on_action(cx.listener(Self::set_output_dir_action))
+            .on_action(cx.listener(Self::save_annotations_action))
             .on_key_down(cx.listener(Self::on_root_key_down))
             .on_key_up(cx.listener(Self::on_root_key_up))
             .on_modifiers_changed(cx.listener(Self::on_root_modifiers_changed))
@@ -1827,48 +2024,51 @@ impl Render for Workspace {
                     .child(
                         div()
                             .id("canvas-column")
-                            .relative()
                             .flex_1()
                             .min_w_0()
+                            .h_full()
+                            .flex()
                             .flex_col()
                             .child(
                                 div()
-                                    .h_full()
-                                    .when(show_filmstrip, |el| el.pb(px(66.)))
-                                    .child(self.canvas.clone()),
+                                    .id("canvas-area")
+                                    .relative()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .bg(theme.rgb(theme.bg_canvas))
+                                    .child(self.canvas.clone())
+                                    .child(self.render_toasts(cx))
+                                    .when(self.validation_visible, |el| {
+                                        el.child(self.render_validation_panel(cx))
+                                    })
+                                    .when(self.help_visible, |el| {
+                                        el.child(
+                                            div()
+                                                .id("help-backdrop")
+                                                .absolute()
+                                                .inset_0()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .bg(gpui::black().opacity(0.35))
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    cx.listener(|ws: &mut Workspace, _, _, cx| {
+                                                        ws.help_visible = false;
+                                                        cx.notify();
+                                                    }),
+                                                )
+                                                .child(self.render_help_overlay(cx)),
+                                        )
+                                    }),
                             )
                             .when(show_filmstrip, |el| {
                                 el.child(
                                     div()
-                                        .absolute()
-                                        .bottom_0()
-                                        .left_0()
+                                        .flex_none()
                                         .w_full()
+                                        .h(px(STRIP_H))
                                         .child(self.filmstrip.clone()),
-                                )
-                            })
-                            .child(self.render_toasts(cx))
-                            .when(self.validation_visible, |el| {
-                                el.child(self.render_validation_panel(cx))
-                            })
-                            .when(self.help_visible, |el| {
-                                el.child(
-                                    div()
-                                        .id("help-backdrop")
-                                        .absolute()
-                                        .inset_0()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .bg(gpui::black().opacity(0.35))
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|ws: &mut Workspace, _, _, cx| {
-                                                ws.help_visible = false;
-                                                cx.notify();
-                                            }),
-                                        )
-                                        .child(self.render_help_overlay(cx)),
                                 )
                             }),
                     )
@@ -1878,6 +2078,41 @@ impl Render for Workspace {
             .when(self.modal.is_some(), |el| el.child(self.render_modal(cx)))
             .into_any_element()
     }
+}
+
+/// Dropdown popover painted above all sibling content (deferred) and kept
+/// on-screen (anchored), positioned just below its toggle button.
+fn popover(
+    id: &'static str,
+    width: Pixels,
+    max_h: Pixels,
+    theme: &crate::ui::theme::Theme,
+    rows: Vec<gpui::AnyElement>,
+    on_out: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> gpui::AnyElement {
+    deferred(
+        anchored().snap_to_window_with_margin(px(8.)).child(
+            div()
+                .id(id)
+                .mt(px(4.))
+                .w(width)
+                .max_h(max_h)
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap(px(1.))
+                .p(px(4.))
+                .rounded(px(8.))
+                .bg(theme.rgb(theme.bg_elevated))
+                .border_1()
+                .border_color(theme.rgb(theme.divider))
+                .shadow_lg()
+                .on_mouse_down_out(on_out)
+                .children(rows),
+        ),
+    )
+    .with_priority(1)
+    .into_any_element()
 }
 
 impl Focusable for Workspace {

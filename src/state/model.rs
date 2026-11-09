@@ -51,6 +51,9 @@ pub struct AppState {
 
     // Annotation state
     pub boxes: Vec<BBox>,
+    /// Boxes as last loaded from / written to disk; `is_dirty` compares
+    /// against this.
+    pub saved_boxes: Vec<BBox>,
     pub selected_indices: BTreeSet<usize>,
     pub clipboard: Vec<BBox>,
     pub preview_boxes: Vec<BBox>,
@@ -127,6 +130,7 @@ impl AppState {
             current_image_size: None,
             unannotated_filter_active: false,
             boxes: Vec::new(),
+            saved_boxes: Vec::new(),
             selected_indices: BTreeSet::new(),
             clipboard: Vec::new(),
             preview_boxes: Vec::new(),
@@ -224,12 +228,17 @@ impl AppState {
     pub fn load_annotations(&mut self, filename: &str) {
         self.boxes.clear();
         self.selected_indices.clear();
-        let Some(txt) = self.annotation_path_for(filename) else {
-            return;
-        };
-        if txt.exists() {
-            self.boxes = yolo::parse_yolo(&txt);
+        if let Some(txt) = self.annotation_path_for(filename) {
+            if txt.exists() {
+                self.boxes = yolo::parse_yolo(&txt);
+            }
         }
+        self.saved_boxes = self.boxes.clone();
+    }
+
+    /// True when the current image's boxes differ from what is on disk.
+    pub fn is_dirty(&self) -> bool {
+        self.current_image_index != -1 && self.boxes != self.saved_boxes
     }
 
     /// Saves the current image's annotations with Python's exact save gating:
@@ -269,11 +278,15 @@ impl AppState {
                         }
                         self.replace_label_counts(txt, counts);
                     }
+                    self.saved_boxes = self.boxes.clone();
                 }
                 Err(err) => {
                     self.class_counts_error = Some(format!("Cannot save {}: {err}", txt.display()));
                 }
             }
+        } else {
+            // Nothing to write (no boxes, no existing file): disk matches.
+            self.saved_boxes = self.boxes.clone();
         }
     }
 
@@ -682,6 +695,7 @@ mod tests {
             unannotated_filter_active: false,
             current_theme_name: "Midnight Glass".into(),
             boxes: vec![],
+            saved_boxes: vec![],
             selected_indices: BTreeSet::new(),
             clipboard: vec![],
             preview_boxes: vec![],
@@ -732,6 +746,7 @@ mod tests {
             unannotated_filter_active: false,
             current_theme_name: String::new(),
             boxes: vec![BBox::new(0, 0.5, 0.5, 0.1, 0.1)],
+            saved_boxes: vec![BBox::new(0, 0.5, 0.5, 0.1, 0.1)],
             selected_indices: BTreeSet::from([0]),
             clipboard: vec![],
             preview_boxes: vec![],
@@ -890,5 +905,28 @@ mod tests {
         assert_eq!(state.boxes.len(), 3);
         assert!(state.redo()); // replays the no-op snapshot
         assert!(!state.redo());
+    }
+
+    #[test]
+    fn dirty_tracks_load_edit_and_save() {
+        let folder = CountFolder::new();
+        folder.write("frame.txt", "0 0.500000 0.500000 0.200000 0.200000
+");
+        let mut state = test_state();
+        state.output_dir = folder.output();
+        state.classes = vec![Class { id: 0, name: "a".into(), color_hex: "#000000".into(), color: (0, 0, 0), default_w: 100.0, default_h: 100.0 }];
+        state.full_image_list = vec!["frame.jpg".into()];
+        state.image_list = state.full_image_list.clone();
+        state.current_image_index = 0;
+        state.load_annotations("frame.jpg");
+        assert_eq!(state.boxes.len(), 1);
+        assert!(!state.is_dirty());
+        state.boxes.push(BBox::new(0, 0.3, 0.3, 0.1, 0.1));
+        assert!(state.is_dirty());
+        state.save_annotations();
+        assert!(!state.is_dirty());
+        state.load_annotations("frame.jpg");
+        assert_eq!(state.boxes.len(), 2);
+        assert!(!state.is_dirty());
     }
 }
