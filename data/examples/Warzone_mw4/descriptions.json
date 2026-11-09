@@ -1,0 +1,22 @@
+{
+  "chain_kill_popup": "Box the large turquoise uppercase chain-kill announcement, such as “DOUBLE KILL,” including its dark rectangular background.",
+  "choose_landing_zone_banner": "Box the bottom-center dark banner reading “CHOOSE A LANDING ZONE,” including the controls beneath it.",
+  "circle_number": "Box the small circle number and countdown timer directly beneath the minimap in the upper-left corner.",
+  "death_banner": "Box the lower-center KILLED BY banner containing the opponent's name, rank, emblem, and calling card.",
+  "down_banner": "Box the upper-right enemy-down notification, including the medical icon, player name, red message, and emblem.",
+  "kill_banner": "Box the eliminated player's horizontal calling-card banner near the bottom center, including its name and emblem.",
+  "killcam": "Box the white KILLCAM text near the top center of the screen.",
+  "map": "Box the minimap showing terrain and player markers in the upper-left corner.",
+  "plane_indicator": "Box the large transport plane viewed from above in the center of the screen.",
+  "post_match_scoreboard": "Box the large central post-match table showing player names, scores, eliminations, kills, assists, redeploys, damage, and squad totals.",
+  "red_down_msg": "Box the small red ENEMY DOWN text inside the upper-right down notification.",
+  "red_kill_msg": "Box the small red kill-count message, such as '12TH KILL,' beneath the bottom-center kill banner.",
+  "released_banner": "Box the upper-center skull-and-chains banner with green arrows, “RELEASED!” text, and “REDEPLOYING” underneath.",
+  "spectating": "Box the white SPECTATING text near the top center of the screen.",
+  "squad_scoreboard": "Box the compact colored squad statistics and numbers in the upper-right corner.",
+  "weapon_board": "Box the bottom-right HUD showing ammunition counts, weapon icons, and equipment.",
+  "wz_defeat": "Box the large white placement text, such as 4TH PLACE, centered on the end-of-match screen.",
+  "wz_pre_deployment": "Box the upper-center deployment countdown, including the 'Deployment will begin in' text and large number.",
+  "wz_victory": "Box the large white VICTORY text centered on the end-of-match screen.",
+  "xp_notif": "Box each small XP notification text, such as ENEMY DOWNED, REVENGE, HUNTER, or LONGSHOT, near the center-right."
+}

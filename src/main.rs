@@ -8,6 +8,7 @@
 //! checkout to share state between both tools.
 
 mod actions;
+mod autolabel;
 mod classes;
 mod images;
 mod state;
@@ -50,6 +51,9 @@ fn main() {
                 workspace
             },
         );
+
+        // CLIProxyAPI runs only while the app does (if enabled in Settings).
+        ui::autolabel_ui::proxy_install(cx);
 
         // Live-apply the persisted theme (AppState is installed by now).
         let persisted_theme = ui::canvas::app_state(cx).current_theme_name.clone();

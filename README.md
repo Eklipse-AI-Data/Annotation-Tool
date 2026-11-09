@@ -63,10 +63,63 @@ set ANNOTATION_TOOL_HOME=D:\path\to\Annotation-Tool
 | Save Preset Slot          | `Ctrl+Shift+1-9`       |
 | Unannotated Filter        | `U`                    |
 | Help Overlay              | `?`                    |
+| Auto Label current image  | `Ctrl+Shift+A`         |
 | Deselect Class            | `Escape`               |
 
 All bindings are customizable in Settings → Keybindings (stored in `config.json` using
 the original Tk syntax, so both tools read them).
+
+## Auto Label (LLM few-shot labeling)
+
+The **Auto Label** tab (sparkles button in the toolbar) lets an LLM label a folder from a
+few examples you label by hand. It talks to any OpenAI-compatible endpoint; to use a
+**Codex / ChatGPT subscription** it goes through [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI),
+which the app can run for you: it starts when the app opens and stops when the app closes
+(it is tied to the app process, so it also stops if the app crashes).
+
+1. Download the CLIProxyAPI Windows release (`CLIProxyAPI_<version>_windows_amd64.zip`) and
+   put `cli-proxy-api.exe` in `cliproxy\` next to the app (or anywhere, and browse to it).
+2. **Settings → Auto Label → CLIProxyAPI**: tick **Start CLIProxyAPI when the app opens…**,
+   click **Sign in to Codex…** and finish the ChatGPT login in the browser (once; the login
+   is kept in `%USERPROFILE%\.cli-proxy-api`).
+3. Keep the endpoint `http://127.0.0.1:8317/v1`, click **Test connection**, pick a model,
+   **Save & Close**.
+
+The app writes the proxy's config itself (`cliproxy\config.yaml`: loopback only, the port
+from the endpoint URL, the API key field as the client key, generated if empty) and logs to
+`cliproxy\cli-proxy-api.log`. To use your own `config.yaml`, set **Proxy config**; then
+the endpoint URL and API key must match it. If something is already listening on the port,
+the app leaves it alone.
+
+Workflow:
+
+- **Target classes** — the classes the model should find. A class named like the image
+  folder (`images/triple_kill` → `triple_kill`) is ticked automatically.
+- **Labeling guide** — **Import guide…** takes your "what to label" doc (a PDF of slides,
+  or annotated screenshots). Pages are rendered with Windows' built-in PDF renderer; the
+  model then tags which classes each page explains (one small request per page) and fills
+  any empty class hint from it. Pages that explain nothing (title, tables, blank) are
+  dropped. From then on every request includes the guide page(s) for the target classes.
+  Stored in `data/examples/<preset>/guide/`; **Add more pages…** / **Remove** manage it.
+- **Examples & hints** — per class, **Pick from folder** adds frames you already labeled
+  that contain the class (spread across the folder, up to "Examples per class"); **Add
+  current** adds the open image as labeled (an image with none of that class's boxes is a
+  *negative* example). The one-line hint per class can be edited. Examples are stored per
+  class preset in `data/examples/<preset>/<class>/`, so they're reused by every folder that
+  uses that preset (the preset is detected from `data/*.txt`).
+- **Test on current image** — shows the model's boxes dashed on the canvas; **Accept** or
+  **Discard**. Use this to tune examples before a batch.
+- **Auto-label unlabeled images** — labels every image in the folder that has no label
+  file yet (existing labels are never touched; a backup is made first). Progress can be
+  cancelled. Results are written as normal YOLO `.txt` files and flagged **AI** in the
+  filmstrip/file list via `.autolabel.json` in the image folder.
+- **Review** — **Next to review** jumps to the next AI-labeled image; fix the boxes if
+  needed and press `Ctrl+S` to accept (editing + autosave also counts). Images where the
+  model found nothing get no label file; **Retry empty/failed** re-queues them.
+
+Settings (`auto_label` in `config.json`): endpoint, key, model, optional
+`reasoning_effort`, parallel requests (default 3), max image side sent (default 1280px)
+and examples per class (default 3). LLM boxes are approximate — always review them.
 
 ## Saving
 

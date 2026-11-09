@@ -5,6 +5,8 @@
 use gpui::{div, prelude::*, px, App, AppContext, Context, Entity, Focusable, InteractiveElement,
     IntoElement, SharedString, Styled, Window};
 
+use crate::autolabel::proxy::{self, ProxyState};
+use crate::autolabel::settings::{AutoLabelSettings, DEFAULT_BASE_URL};
 use crate::state::config::{gpui_to_tk, BINDABLE_ACTIONS};
 use crate::state::paths;
 
@@ -22,6 +24,7 @@ pub enum SettingsTab {
     GamePresets,
     BoxPresets,
     Themes,
+    AutoLabel,
 }
 
 impl SettingsTab {
@@ -33,18 +36,106 @@ impl SettingsTab {
             SettingsTab::GamePresets => "Games",
             SettingsTab::BoxPresets => "Box presets",
             SettingsTab::Themes => "Theme",
+            SettingsTab::AutoLabel => "Auto Label",
         }
     }
 }
 
-const TABS: [SettingsTab; 6] = [
+const TABS: [SettingsTab; 7] = [
     SettingsTab::Keybindings,
     SettingsTab::ClassManagement,
     SettingsTab::BatchOperations,
     SettingsTab::GamePresets,
     SettingsTab::BoxPresets,
     SettingsTab::Themes,
+    SettingsTab::AutoLabel,
 ];
+
+/// Text fields of the Auto Label settings tab.
+struct AutoLabelFields {
+    base_url: Entity<Entry>,
+    api_key: Entity<Entry>,
+    model: String,
+    reasoning: String,
+    model_open: bool,
+    reasoning_open: bool,
+    popover_closed_at: Option<std::time::Instant>,
+    concurrency: Entity<Entry>,
+    max_side: Entity<Entry>,
+    max_examples: Entity<Entry>,
+    proxy_managed: bool,
+    proxy_exe: Entity<Entry>,
+    proxy_config: Entity<Entry>,
+    /// `(is_error, text)` from the last proxy button.
+    proxy_msg: Option<(bool, String)>,
+}
+
+impl AutoLabelFields {
+    fn new(s: &AutoLabelSettings, cx: &mut Context<SettingsView>) -> Self {
+        let field = |placeholder: &str, value: String, cx: &mut Context<SettingsView>| {
+            cx.new(|cx| {
+                let mut e = Entry::new(placeholder, cx);
+                e.content = value.into();
+                e
+            })
+        };
+        Self {
+            base_url: field(DEFAULT_BASE_URL, s.base_url.clone(), cx),
+            api_key: field("Client key (made up automatically when the app runs the proxy)", s.api_key.clone(), cx),
+            model: s.model.clone(),
+            reasoning: s.reasoning_effort.clone(),
+            model_open: false,
+            reasoning_open: false,
+            popover_closed_at: None,
+            concurrency: field("3", s.concurrency.to_string(), cx),
+            max_side: field("1280", s.max_side.to_string(), cx),
+            max_examples: field("3", s.max_examples_per_class.to_string(), cx),
+            proxy_managed: s.proxy_managed,
+            proxy_exe: field("Auto-detect: cliproxy\\cli-proxy-api.exe in the app folder, or PATH", s.proxy_exe.clone(), cx),
+            proxy_config: field("Empty = the app writes its own config", s.proxy_config.clone(), cx),
+            proxy_msg: None,
+        }
+    }
+
+    /// Settings as currently typed (unparseable numbers keep `base` values).
+    fn read(&self, base: &AutoLabelSettings, cx: &App) -> AutoLabelSettings {
+        let text = |e: &Entity<Entry>| e.read(cx).text().trim().to_string();
+        let mut s = base.clone();
+        s.base_url = text(&self.base_url);
+        if s.base_url.is_empty() {
+            s.base_url = DEFAULT_BASE_URL.to_string();
+        }
+        s.api_key = text(&self.api_key);
+        s.model = self.model.trim().to_string();
+        s.reasoning_effort = self.reasoning.clone();
+        if let Ok(v) = text(&self.concurrency).parse::<usize>() {
+            s.concurrency = v.clamp(1, 16);
+        }
+        if let Ok(v) = text(&self.max_side).parse::<u32>() {
+            s.max_side = v.clamp(256, 4096);
+        }
+        if let Ok(v) = text(&self.max_examples).parse::<usize>() {
+            s.max_examples_per_class = v.clamp(0, 10);
+        }
+        s.proxy_managed = self.proxy_managed;
+        s.proxy_exe = text(&self.proxy_exe).trim_matches('"').to_string();
+        s.proxy_config = text(&self.proxy_config).trim_matches('"').to_string();
+        s
+    }
+}
+
+/// Game preset files in `data/` (every `.txt` except the active class list).
+fn scan_game_presets() -> Vec<String> {
+    let mut files: Vec<String> = std::fs::read_dir(paths::data_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.to_lowercase().ends_with(".txt") && n != "predefined_classes.txt")
+        .collect();
+    files.sort();
+    files
+}
 
 pub struct SettingsView {
     workspace: Entity<Workspace>,
@@ -58,6 +149,7 @@ pub struct SettingsView {
     preset_files: Vec<String>,
     preset_selected: Option<usize>,
     box_slot_selected: Option<u8>,
+    auto_label: AutoLabelFields,
     focus: gpui::FocusHandle,
 }
 
@@ -65,17 +157,10 @@ impl SettingsView {
     pub fn new(workspace: Entity<Workspace>, cx: &mut Context<Self>) -> Self {
         let temp_classes: Vec<String> =
             app_state(cx).classes.iter().map(|c| c.name.clone()).collect();
-        let mut preset_files: Vec<String> = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(paths::data_dir()) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.to_lowercase().ends_with(".txt") && name != "predefined_classes.txt" {
-                    preset_files.push(name);
-                }
-            }
-        }
-        preset_files.sort();
+        let preset_files = scan_game_presets();
         let new_class = cx.new(|cx| Entry::new("New class name…", cx));
+        let al_settings = AutoLabelSettings::from_config(&app_state(cx).config.raw);
+        let auto_label = AutoLabelFields::new(&al_settings, cx);
         Self {
             workspace,
             tab: SettingsTab::Keybindings,
@@ -88,8 +173,83 @@ impl SettingsView {
             preset_files,
             preset_selected: None,
             box_slot_selected: None,
+            auto_label,
             focus: cx.focus_handle(),
         }
+    }
+
+    pub fn select_tab(&mut self, tab: SettingsTab, cx: &mut Context<Self>) {
+        self.tab = tab;
+        self.capture_target = None;
+        cx.notify();
+    }
+
+    fn auto_label_settings(&self, cx: &App) -> AutoLabelSettings {
+        let base = AutoLabelSettings::from_config(&app_state(cx).config.raw);
+        self.auto_label.read(&base, cx)
+    }
+
+    /// Reloads the model list from the endpoint as currently typed.
+    fn test_auto_label_connection(&mut self, cx: &mut Context<Self>) {
+        let settings = self.auto_label_settings(cx);
+        super::autolabel_ui::refresh_models(settings, cx);
+        cx.notify();
+    }
+
+    fn popover_just_closed(&self) -> bool {
+        self.auto_label
+            .popover_closed_at
+            .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(250))
+    }
+
+    /// Typed settings, with a client key made up if the app writes the proxy
+    /// config and none is set (shown in the API key field).
+    fn auto_label_settings_with_key(&mut self, cx: &mut Context<Self>) -> AutoLabelSettings {
+        let mut s = self.auto_label_settings(cx);
+        if s.proxy_config.is_empty() && s.api_key.is_empty() {
+            s.api_key = proxy::generate_key();
+            let key = s.api_key.clone();
+            self.auto_label.api_key.update(cx, |e, cx| e.set_text(&key, cx));
+        }
+        s
+    }
+
+    fn proxy_start(&mut self, cx: &mut Context<Self>) {
+        let s = self.auto_label_settings_with_key(cx);
+        self.auto_label.proxy_msg = None;
+        proxy::stop();
+        super::autolabel_ui::proxy_start_with(s, cx);
+        cx.notify();
+    }
+
+    fn proxy_stop(&mut self, cx: &mut Context<Self>) {
+        proxy::stop();
+        self.auto_label.proxy_msg = None;
+        cx.notify();
+    }
+
+    fn proxy_sign_in(&mut self, cx: &mut Context<Self>) {
+        let s = self.auto_label_settings_with_key(cx);
+        self.auto_label.proxy_msg = Some(match super::autolabel_ui::proxy_codex_login(&s, cx) {
+            Ok(()) => (false, "Sign-in window opened. Finish the ChatGPT login in your browser; the proxy restarts when that window closes.".into()),
+            Err(e) => (true, e),
+        });
+        cx.notify();
+    }
+
+    fn proxy_browse_exe(&mut self, cx: &mut Context<Self>) {
+        let entry = self.auto_label.proxy_exe.clone();
+        cx.spawn(async move |_this: gpui::WeakEntity<SettingsView>, cx: &mut gpui::AsyncApp| {
+            let picked = rfd::AsyncFileDialog::new()
+                .set_title("Select cli-proxy-api.exe")
+                .add_filter("Program", &["exe"])
+                .pick_file()
+                .await;
+            if let Some(path) = picked.and_then(|f| f.path().to_str().map(|s| s.to_string())) {
+                let _ = cx.update(|cx| entry.update(cx, |e, cx| e.set_text(&path, cx)));
+            }
+        })
+        .detach();
     }
 
     fn on_capture_key(&mut self, event: &gpui::KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
@@ -118,8 +278,12 @@ impl SettingsView {
     }
 
     fn save_and_close(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let al = self.auto_label_settings(cx);
+        al.store(&mut app_state_mut(cx).config.raw);
         let config = app_state(cx).config.clone();
         config.save();
+        // Start/stop/restart CLIProxyAPI to match (no-op if nothing changed).
+        super::autolabel_ui::proxy_apply(cx);
         let ws = self.workspace.clone();
         cx.spawn(async move |_this: gpui::WeakEntity<SettingsView>, cx: &mut gpui::AsyncApp| {
             let _ = cx.update(|cx| {
@@ -218,6 +382,7 @@ impl Render for SettingsView {
             SettingsTab::GamePresets => self.render_game_presets(cx),
             SettingsTab::BoxPresets => self.render_box_presets(cx),
             SettingsTab::Themes => self.render_themes(cx),
+            SettingsTab::AutoLabel => self.render_auto_label(cx),
         };
 
         widgets::panel(theme)
@@ -601,18 +766,7 @@ impl SettingsView {
                     .child(
                         widgets::button("gp-refresh", "Refresh", BtnVariant::Default, theme).on_click(
                             cx.listener(|view: &mut SettingsView, _, _, cx| {
-                                view.preset_files.clear();
-                                if let Ok(entries) = std::fs::read_dir(paths::data_dir()) {
-                                    for entry in entries.flatten() {
-                                        let name = entry.file_name().to_string_lossy().to_string();
-                                        if name.to_lowercase().ends_with(".txt")
-                                            && name != "predefined_classes.txt"
-                                        {
-                                            view.preset_files.push(name);
-                                        }
-                                    }
-                                }
-                                view.preset_files.sort();
+                                view.preset_files = scan_game_presets();
                                 view.preset_selected = None;
                                 cx.notify();
                             }),
@@ -819,6 +973,298 @@ impl SettingsView {
                 theme,
             ))
             .child(div().flex().gap(px(10.)).children(cards))
+            .into_any_element()
+    }
+
+    fn render_auto_label(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = ThemeState::current(cx);
+        let row = |label: &'static str, entry: &Entity<Entry>, hint: &'static str| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .child(div().w(px(150.)).flex_none().child(widgets::body_text(label, theme)))
+                .child(div().flex_1().min_w_0().child(entry.clone()))
+                .when(!hint.is_empty(), |el| {
+                    el.child(div().w(px(80.)).flex_none().child(widgets::caption(hint, theme)))
+                })
+        };
+        let label_cell = |label: &'static str| div().w(px(150.)).flex_none().child(widgets::body_text(label, theme));
+
+        // Model dropdown (+ connection test / reload).
+        let model = self.auto_label.model.clone();
+        let mut model_dd = div().id("al-set-model-dd").flex_1().min_w_0().child(
+            widgets::dropdown_button(
+                "al-set-model-btn",
+                if model.is_empty() { "Select a model…".to_string() } else { model.clone() },
+                model.is_empty(),
+                self.auto_label.model_open,
+                theme,
+            )
+            .on_click(cx.listener(|view: &mut SettingsView, _, _, cx| {
+                if !view.popover_just_closed() {
+                    view.auto_label.model_open = !view.auto_label.model_open;
+                    view.auto_label.reasoning_open = false;
+                    let empty = super::autolabel_ui::model_list(cx).is_none_or(|l| !l.loaded && !l.loading);
+                    if view.auto_label.model_open && empty {
+                        view.test_auto_label_connection(cx);
+                    }
+                }
+                cx.notify();
+            })),
+        );
+        if self.auto_label.model_open {
+            let rows = super::autolabel_ui::model_rows(
+                "al-set-model",
+                &model,
+                theme,
+                cx,
+                |view: &mut SettingsView, m, cx| {
+                    view.auto_label.model = m;
+                    view.auto_label.model_open = false;
+                    cx.notify();
+                },
+                |view: &mut SettingsView, cx| view.test_auto_label_connection(cx),
+            );
+            model_dd = model_dd.child(widgets::popover("al-set-model-pop", px(320.), px(320.), theme, rows,
+                cx.listener(|view: &mut SettingsView, _, _, cx| {
+                    view.auto_label.model_open = false;
+                    view.auto_label.popover_closed_at = Some(std::time::Instant::now());
+                    cx.notify();
+                })));
+        }
+
+        // Reasoning effort dropdown.
+        let reasoning = self.auto_label.reasoning.clone();
+        let mut reasoning_dd = div().id("al-set-reasoning-dd").flex_1().min_w_0().child(
+            widgets::dropdown_button(
+                "al-set-reasoning-btn",
+                crate::autolabel::settings::reasoning_label(&reasoning),
+                reasoning.is_empty(),
+                self.auto_label.reasoning_open,
+                theme,
+            )
+            .on_click(cx.listener(|view: &mut SettingsView, _, _, cx| {
+                if !view.popover_just_closed() {
+                    view.auto_label.reasoning_open = !view.auto_label.reasoning_open;
+                    view.auto_label.model_open = false;
+                }
+                cx.notify();
+            })),
+        );
+        if self.auto_label.reasoning_open {
+            let rows = super::autolabel_ui::reasoning_rows("al-set-reasoning", &reasoning, theme, cx,
+                |view: &mut SettingsView, level, cx| {
+                    view.auto_label.reasoning = level;
+                    view.auto_label.reasoning_open = false;
+                    cx.notify();
+                });
+            reasoning_dd = reasoning_dd.child(widgets::popover("al-set-reasoning-pop", px(240.), px(300.), theme, rows,
+                cx.listener(|view: &mut SettingsView, _, _, cx| {
+                    view.auto_label.reasoning_open = false;
+                    view.auto_label.popover_closed_at = Some(std::time::Instant::now());
+                    cx.notify();
+                })));
+        }
+
+        let (loading, status): (bool, Option<(bool, String)>) = match super::autolabel_ui::model_list(cx) {
+            Some(l) if l.loading => (true, Some((false, "Loading models…".to_string()))),
+            Some(l) => match &l.error {
+                Some(e) => (false, Some((true, e.clone()))),
+                None if l.loaded => (false, Some((false, format!("Connected: {} model(s) can label images.", l.models.len())))),
+                None => (false, None),
+            },
+            None => (false, None),
+        };
+        let testing = loading;
+        let f = &self.auto_label;
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .child(
+                div()
+                    .text_size(px(13.5))
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_color(theme.rgb(theme.fg_highlight))
+                    .child("Auto Label endpoint"),
+            )
+            .child(widgets::caption(
+                "Any OpenAI-compatible endpoint. For a Codex subscription use CLIProxyAPI at http://127.0.0.1:8317/v1; the app can start and stop it for you (see CLIProxyAPI below).",
+                theme,
+            ))
+            .child(row("Endpoint URL", &f.base_url, ""))
+            .child(row("API key", &f.api_key, ""))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(label_cell("Model"))
+                    .child(model_dd),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(label_cell("Reasoning effort"))
+                    .child(reasoning_dd),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        widgets::button(
+                            "al-test-conn",
+                            if testing { "Testing…" } else { "Test connection" },
+                            BtnVariant::Default,
+                            theme,
+                        )
+                        .on_click(cx.listener(|view: &mut SettingsView, _, _, cx| view.test_auto_label_connection(cx))),
+                    )
+                    .when_some(status, |el, (is_err, text)| {
+                        el.child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(px(11.5))
+                                .line_height(px(16.))
+                                .text_color(if is_err { theme.rgb(theme.error) } else { theme.rgb(theme.fg_muted) })
+                                .child(text),
+                        )
+                    }),
+            )
+            .child(div().mt(px(6.)).child(widgets::h_divider(theme)))
+            .child(self.render_proxy_section(cx))
+            .child(div().mt(px(6.)).child(widgets::h_divider(theme)))
+            .child(row("Parallel requests", &f.concurrency, "1–16"))
+            .child(row("Max image side (px)", &f.max_side, "256–4096"))
+            .child(row("Examples per class", &f.max_examples, "0–10"))
+            .child(widgets::caption(
+                "Changes apply after Save & Close. Larger images and more examples improve accuracy but use more of your usage limits per image.",
+                theme,
+            ))
+            .into_any_element()
+    }
+
+    fn render_proxy_section(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = ThemeState::current(cx);
+        let f = &self.auto_label;
+        let managed = f.proxy_managed;
+        let typed = f.read(&AutoLabelSettings::default(), cx);
+        let exe = proxy::find_exe(&typed.proxy_exe);
+        let exe_line: (bool, String) = match &exe {
+            Some(p) => (false, format!("Using {}", p.display())),
+            None if typed.proxy_exe.is_empty() => (
+                true,
+                format!("cli-proxy-api.exe not found. Put it in {} or browse to it.", proxy::proxy_dir().display()),
+            ),
+            None => (true, format!("{} does not exist.", typed.proxy_exe)),
+        };
+        let accounts = proxy::codex_accounts();
+        let account_line = if accounts.is_empty() {
+            "No Codex account signed in yet. Use Sign in to Codex.".to_string()
+        } else {
+            format!("Codex account: {}", accounts.join(", "))
+        };
+        let state = proxy::state();
+        let (state_err, state_text) = super::autolabel_ui::proxy_status_line(&state);
+        let running = matches!(state, ProxyState::Running { .. } | ProxyState::Starting);
+        let signing_in = proxy::login_running();
+        let msg = f.proxy_msg.clone();
+        let line = |is_err: bool, text: String| {
+            div()
+                .text_size(px(11.5))
+                .line_height(px(16.))
+                .text_color(if is_err { theme.rgb(theme.error) } else { theme.rgb(theme.fg_muted) })
+                .child(text)
+        };
+        let row = |label: &'static str, entry: &Entity<Entry>| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .child(div().w(px(150.)).flex_none().child(widgets::body_text(label, theme)))
+                .child(div().flex_1().min_w_0().child(entry.clone()))
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(
+                div()
+                    .text_size(px(13.5))
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_color(theme.rgb(theme.fg_highlight))
+                    .child("CLIProxyAPI"),
+            )
+            .child(
+                widgets::checkbox(
+                    "al-proxy-managed",
+                    "Start CLIProxyAPI when the app opens and stop it when the app closes",
+                    managed,
+                    theme,
+                )
+                .on_click(cx.listener(|view: &mut SettingsView, _, _, cx| {
+                    view.auto_label.proxy_managed = !view.auto_label.proxy_managed;
+                    cx.notify();
+                })),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(div().flex_1().min_w_0().child(row("cli-proxy-api.exe", &f.proxy_exe)))
+                    .child(
+                        widgets::button("al-proxy-browse", "Browse…", BtnVariant::Default, theme)
+                            .on_click(cx.listener(|view: &mut SettingsView, _, _, cx| view.proxy_browse_exe(cx))),
+                    ),
+            )
+            .child(line(exe_line.0, exe_line.1))
+            .child(row("Proxy config", &f.proxy_config))
+            .child(line(false, account_line))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        widgets::button(
+                            "al-proxy-signin",
+                            if signing_in { "Signing in…" } else { "Sign in to Codex…" },
+                            BtnVariant::Default,
+                            theme,
+                        )
+                        .on_click(cx.listener(|view: &mut SettingsView, _, _, cx| view.proxy_sign_in(cx))),
+                    )
+                    .child(
+                        widgets::button("al-proxy-start", if running { "Restart" } else { "Start" }, BtnVariant::Default, theme)
+                            .on_click(cx.listener(|view: &mut SettingsView, _, _, cx| view.proxy_start(cx))),
+                    )
+                    .when(running, |el| {
+                        el.child(
+                            widgets::button("al-proxy-stop", "Stop", BtnVariant::Default, theme)
+                                .on_click(cx.listener(|view: &mut SettingsView, _, _, cx| view.proxy_stop(cx))),
+                        )
+                    })
+                    .when(proxy::log_path().is_file(), |el| {
+                        el.child(widgets::header_link("al-proxy-log", "Open log", theme).on_click(|_, _, _| {
+                            let _ = std::process::Command::new("notepad.exe").arg(proxy::log_path()).spawn();
+                        }))
+                    }),
+            )
+            .child(line(state_err, state_text))
+            .when_some(msg, |el, (is_err, text)| el.child(line(is_err, text)))
+            .child(widgets::caption(
+                "Unless you set your own config file, the app writes the proxy config itself: 127.0.0.1, the port from the endpoint URL, and the API key above. Sign in once; the login is kept in %USERPROFILE%\\.cli-proxy-api.",
+                theme,
+            ))
             .into_any_element()
     }
 }

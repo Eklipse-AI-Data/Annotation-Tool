@@ -160,6 +160,8 @@ impl Render for Filmstrip {
                     });
                 }
 
+                let ai_pending = super::autolabel_ui::review_status(cx, &name)
+                    == Some(crate::autolabel::review::Status::Pending);
                 let border = if is_current {
                     theme.rgb(theme.accent)
                 } else if hovered == Some(idx) {
@@ -191,6 +193,7 @@ impl Render for Filmstrip {
                                 .bg(theme.rgba(theme.fg_muted, 0.1))
                                 .into_any_element(),
                         })
+                        .when(ai_pending, |el| el.child(ai_badge(theme)))
                         .into_any_element(),
                 );
             }
@@ -266,3 +269,22 @@ impl Filmstrip {
 
 #[allow(dead_code)]
 fn unused(_: SharedString) {}
+
+/// Small "AI" pill marking images whose labels came from Auto Label and
+/// haven't been reviewed yet.
+pub fn ai_badge(theme: &super::theme::Theme) -> gpui::Div {
+    div()
+        .absolute()
+        .top(px(3.0))
+        .left(px(3.0))
+        .px(px(4.0))
+        .h(px(13.0))
+        .flex()
+        .items_center()
+        .rounded(px(3.0))
+        .bg(theme.rgb(theme.info))
+        .text_size(px(9.0))
+        .font_weight(gpui::FontWeight::BOLD)
+        .text_color(gpui::white())
+        .child("AI")
+}

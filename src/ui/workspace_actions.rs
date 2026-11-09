@@ -66,6 +66,13 @@ impl Workspace {
         self.open_images_dialog(cx);
     }
 
+    pub fn auto_label_current_action(&mut self, _: &AutoLabelCurrent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.blocked(window, cx) {
+            return;
+        }
+        self.autolabel_test_current(cx);
+    }
+
     // ------------------------------------------------------------------
     // Startup
     // ------------------------------------------------------------------
@@ -450,12 +457,17 @@ impl Workspace {
         state.full_image_list = names;
         state.image_list = state.full_image_list.clone();
         state.unannotated_filter_active = false;
+        self.autolabel_on_folder_loaded(cx);
     }
 
     pub fn load_image(&mut self, index: usize, cx: &mut Context<Self>) {
         let len = app_state(cx).image_list.len();
         if len == 0 || index >= len {
             return;
+        }
+        // Edits to an AI-labeled image that autosave persists count as review.
+        if app_state(cx).auto_save && app_state(cx).is_dirty() {
+            self.autolabel_mark_current_reviewed(cx);
         }
         {
             let state = app_state_mut(cx);
@@ -522,6 +534,7 @@ impl Workspace {
             cx.notify();
             return false;
         }
+        self.autolabel_mark_current_reviewed(cx);
         cx.notify();
         true
     }
@@ -1178,11 +1191,13 @@ impl Workspace {
         let data_dir = paths::data_dir();
         let source = data_dir.join(preset_file);
         let target = paths::classes_file();
+        let preset_name = preset_file.to_string();
         self.confirm(
             "Confirm",
             format!("Overwrite current classes with {preset_file}?"),
             Box::new(move |ws, _window, cx| {
                 if std::fs::copy(&source, &target).is_ok() {
+                    Workspace::autolabel_remember_preset(&preset_name, cx);
                     {
                         let state = app_state_mut(cx);
                         state.classes = classes::load_classes(&paths::classes_file());
@@ -1265,6 +1280,7 @@ impl Workspace {
             label: "Starting…".into(),
             current: 0,
             total: 0,
+            cancel: None,
         });
         cx.notify();
 
@@ -1435,6 +1451,7 @@ impl Workspace {
                     label: "Starting…".into(),
                     current: 0,
                     total: 0,
+                    cancel: None,
                 });
                 cx.notify();
 

@@ -3,8 +3,8 @@
 //! accent color used sparingly.
 
 use gpui::{
-    div, prelude::*, px, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels,
-    SharedString, Stateful, Styled,
+    anchored, deferred, div, prelude::*, px, App, Hsla, InteractiveElement, IntoElement, ParentElement,
+    Pixels, SharedString, Stateful, Styled, Window,
 };
 
 use super::icons::icon;
@@ -155,6 +155,111 @@ pub fn kbd(text: impl Into<SharedString>, theme: &Theme) -> gpui::Div {
         .text_size(px(10.5))
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(theme.rgb(theme.fg_muted))
+        .child(text.into())
+}
+
+// ---------------------------------------------------------------------------
+// Dropdown (button + popover list)
+// ---------------------------------------------------------------------------
+
+/// Dropdown list painted above all sibling content (deferred) and kept
+/// on-screen (anchored), positioned just below its toggle button.
+pub fn popover(
+    id: impl Into<gpui::ElementId>,
+    width: Pixels,
+    max_h: Pixels,
+    theme: &Theme,
+    rows: Vec<gpui::AnyElement>,
+    on_out: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
+) -> gpui::AnyElement {
+    deferred(
+        anchored().snap_to_window_with_margin(px(8.)).child(
+            div()
+                .id(id.into())
+                .mt(px(4.))
+                .w(width)
+                .max_h(max_h)
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap(px(1.))
+                .p(px(4.))
+                .rounded(px(8.))
+                .bg(theme.rgb(theme.bg_elevated))
+                .border_1()
+                .border_color(theme.rgb(theme.divider))
+                .shadow_lg()
+                // Clicks on a row must not also hit what's painted beneath.
+                .occlude()
+                .on_mouse_down_out(on_out)
+                .children(rows),
+        ),
+    )
+    .with_priority(1)
+    .into_any_element()
+}
+
+/// The closed state of a dropdown: current value + chevron.
+pub fn dropdown_button(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    placeholder: bool,
+    open: bool,
+    theme: &Theme,
+) -> Stateful<gpui::Div> {
+    let chevron = icon(if open { "chevron-up" } else { "chevron-down" }, 13.0, theme.rgb(theme.fg_muted));
+    div()
+        .id(id.into())
+        .w_full()
+        .h(px(30.))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(6.))
+        .px(px(8.))
+        .rounded(px(6.))
+        .border_1()
+        .border_color(theme.rgb(theme.divider))
+        .bg(theme.rgb(theme.entry_bg))
+        .text_size(px(12.))
+        .text_color(if placeholder { theme.rgb(theme.fg_muted) } else { theme.rgb(theme.fg_text) })
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.12)))
+        .child(div().flex_1().min_w_0().truncate().child(label.into()))
+        .child(chevron)
+}
+
+/// One choice inside a dropdown popover.
+pub fn dropdown_row(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    selected: bool,
+    theme: &Theme,
+) -> Stateful<gpui::Div> {
+    div()
+        .id(id.into())
+        .flex_none()
+        .px(px(8.))
+        .h(px(28.))
+        .flex()
+        .items_center()
+        .rounded(px(6.))
+        .text_size(px(12.))
+        .cursor_pointer()
+        .when(selected, |el| el.bg(theme.selection_bg()))
+        .hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.12)))
+        .child(div().min_w_0().truncate().child(label.into()))
+}
+
+/// A muted, non-clickable line inside a dropdown popover (status, hints).
+pub fn dropdown_note(text: impl Into<SharedString>, is_error: bool, theme: &Theme) -> gpui::Div {
+    div()
+        .flex_none()
+        .px(px(8.))
+        .py(px(6.))
+        .text_size(px(11.5))
+        .line_height(px(15.))
+        .text_color(if is_error { theme.rgb(theme.error) } else { theme.rgb(theme.fg_muted) })
         .child(text.into())
 }
 

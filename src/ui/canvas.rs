@@ -776,6 +776,11 @@ impl Element for CanvasElement {
         cx: &mut App,
     ) {
         let theme = ThemeState::current(cx);
+        let preview_tag = if app_state(cx).preview_source == Some(crate::state::model::PreviewSource::AutoLabel) {
+            "AI"
+        } else {
+            "Preview"
+        };
         let (image, dims, t, boxes_snapshot, preview_snapshot, gesture, hover, crosshair_color, crosshair_dash, show_labels) = {
             let canvas = self.canvas.read(cx);
             let state = app_state(cx);
@@ -905,7 +910,7 @@ impl Element for CanvasElement {
             let (_, name) = class_color(b.class_id);
             stroke_box(window, p1, p2, theme.rgb(theme.info), 2.0, Some((6.0, 4.0)));
             if show_labels {
-                paint_label(window, cx, theme, p1, &format!("{name} (Preview)"), theme.rgb(theme.info));
+                paint_label(window, cx, theme, p1, &format!("{name} ({preview_tag})"), theme.rgb(theme.info));
             }
         }
 

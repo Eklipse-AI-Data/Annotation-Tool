@@ -1,3 +1,4 @@
+pub mod autolabel_ui;
 pub mod canvas;
 pub mod icons;
 pub mod dialogs;

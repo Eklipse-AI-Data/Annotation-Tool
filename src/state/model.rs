@@ -19,6 +19,8 @@ pub const MAX_HISTORY: usize = 50;
 pub enum PreviewSource {
     Clipboard,
     Preset,
+    /// Auto Label suggestions for the current image, awaiting Accept.
+    AutoLabel,
 }
 
 #[derive(Debug)]

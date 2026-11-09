@@ -5,8 +5,8 @@
 use std::time::Instant;
 
 use gpui::{
-    anchored, deferred, div, prelude::*, px, uniform_list, App, AppContext, Context, Entity,
-    FocusHandle, Focusable, Hsla, IntoElement, MouseButton, MouseMoveEvent, Pixels, SharedString,
+    div, prelude::*, px, uniform_list, App, AppContext, Context, Entity,
+    FocusHandle, Focusable, Hsla, IntoElement, MouseButton, MouseMoveEvent, SharedString,
     Styled, UniformListScrollHandle, Window,
 };
 
@@ -24,6 +24,7 @@ use super::widgets::{self, BtnVariant};
 pub enum LeftTab {
     Project,
     Classes,
+    AutoLabel,
 }
 
 pub struct Toast {
@@ -60,6 +61,8 @@ pub enum Modal {
         label: SharedString,
         current: usize,
         total: usize,
+        /// When set, the modal shows a Cancel button that raises this flag.
+        cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     },
     EditClass,
 }
@@ -112,6 +115,9 @@ pub struct Workspace {
 
     pub did_focus: bool,
     pub last_title: String,
+
+    /// Auto Label tab state.
+    pub autolabel: super::autolabel_ui::AutoLabelPanel,
 }
 
 impl Workspace {
@@ -185,6 +191,7 @@ impl Workspace {
             box_list_dragging: false,
             did_focus: false,
             last_title: String::new(),
+            autolabel: super::autolabel_ui::AutoLabelPanel::new(),
         }
     }
 
@@ -215,7 +222,7 @@ impl Workspace {
         .detach();
     }
 
-    fn popover_just_closed(&self) -> bool {
+    pub(crate) fn popover_just_closed(&self) -> bool {
         self.popover_closed_at
             .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(250))
     }
@@ -251,7 +258,7 @@ impl Workspace {
     /// fire (Python parity). Escape is exempt (handled by caller).
     pub fn entry_focused(&self, window: &Window, cx: &App) -> bool {
         let entry_focus = self.class_search.read(cx).focus_handle(cx);
-        entry_focus.is_focused(window)
+        entry_focus.is_focused(window) || self.autolabel.any_entry_focused(window, cx)
     }
 
     pub fn blocked(&self, window: &Window, cx: &App) -> bool {
@@ -379,6 +386,15 @@ impl Workspace {
                 |ws: &mut Workspace, _, window, cx| ws.redo_impl(window, cx),
             )))
             .child(widgets::toolbar_divider(theme))
+            .child(
+                widgets::icon_button(
+                    "tb-autolabel",
+                    "sparkles",
+                    show_left && self.left_tab == LeftTab::AutoLabel,
+                    theme,
+                )
+                .on_click(cx.listener(|ws: &mut Workspace, _, _, cx| ws.autolabel_open_tab(cx))),
+            )
             .child(widgets::icon_button("tb-validate", "check-circle", self.validation_visible, theme).on_click(
                 cx.listener(|ws: &mut Workspace, _, window, cx| ws.show_validation(window, cx)),
             ))
@@ -496,6 +512,7 @@ impl Workspace {
         let has_image = state.current_image_index != -1;
         let dirty = state.is_dirty();
         let auto = state.auto_save;
+        let ai_pending = self.autolabel_current_pending(cx);
 
         let save_state = div()
             .flex_none()
@@ -528,6 +545,18 @@ impl Workspace {
             .text_size(px(11.))
             .text_color(theme.rgb(theme.fg_muted))
             .child(div().flex_1().min_w_0().truncate().child(self.status.clone()))
+            .when(ai_pending, |el| {
+                el.child(widgets::v_divider(theme)).child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .text_color(theme.rgb(theme.info))
+                        .child(super::icons::icon("sparkles", 11.0, theme.rgb(theme.info)))
+                        .child("AI labels · review, then Ctrl+S to accept"),
+                )
+            })
             .child(widgets::v_divider(theme))
             .child(save_state)
             .child(widgets::v_divider(theme))
@@ -562,11 +591,16 @@ impl Workspace {
                         ws.left_tab = LeftTab::Classes;
                         cx.notify();
                     })),
+            )
+            .child(
+                widgets::strip_tab("tab-autolabel", "Auto Label", self.left_tab == LeftTab::AutoLabel, theme)
+                    .on_click(cx.listener(|ws: &mut Workspace, _, _, cx| ws.autolabel_open_tab(cx))),
             );
 
         let body: gpui::AnyElement = match self.left_tab {
             LeftTab::Project => self.render_project_tab(cx),
             LeftTab::Classes => self.render_classes_tab(cx),
+            LeftTab::AutoLabel => self.render_autolabel_tab(cx),
         };
 
         div()
@@ -978,6 +1012,7 @@ impl Workspace {
             for ix in range {
                 let Some(filename) = state.image_list.get(ix) else { continue };
                 let is_current = state.current_image_index == ix as i64;
+                let ai_status = super::autolabel_ui::review_status(cx, filename);
                 rows.push(
                     div()
                         .id(("file-row", ix))
@@ -995,7 +1030,24 @@ impl Workspace {
                                 .text_color(theme.rgb(theme.fg_highlight))
                         })
                         .when(!is_current, |el| el.hover(|s| s.bg(theme.rgba(theme.fg_muted, 0.1))))
-                        .child(div().min_w_0().truncate().child(filename.clone()))
+                        .child(div().flex_1().min_w_0().truncate().child(filename.clone()))
+                        .when_some(ai_status, |el, status| {
+                            use crate::autolabel::review::Status;
+                            let (text, color) = match status {
+                                Status::Pending => ("AI", theme.rgb(theme.info)),
+                                Status::Empty => ("AI ∅", theme.rgb(theme.fg_muted)),
+                                Status::Error => ("AI !", theme.rgb(theme.error)),
+                            };
+                            el.child(
+                                div()
+                                    .flex_none()
+                                    .ml(px(6.))
+                                    .text_size(px(10.))
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .text_color(color)
+                                    .child(text),
+                            )
+                        })
                         .on_click({
                             let on_click = std::rc::Rc::clone(&on_click);
                             move |_, window, cx| on_click(&ix, window, cx)
@@ -1679,8 +1731,12 @@ impl Workspace {
                         ),
                 )
                 .into_any_element(),
-            Modal::Progress { title, label, current, total } => {
+            Modal::Progress { title, label, current, total, cancel } => {
                 let pct = if *total > 0 { *current as f32 / *total as f32 } else { 0.0 };
+                let cancel = cancel.clone();
+                let cancelling = cancel
+                    .as_ref()
+                    .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed));
                 widgets::panel(theme)
                     .id("modal-progress")
                     .w(px(440.))
@@ -1701,6 +1757,22 @@ impl Workspace {
                             .child(label.clone()),
                     )
                     .child(widgets::progress_bar("modal-progress-bar", pct, theme))
+                    .when_some(cancel, |el, flag| {
+                        el.child(
+                            div().flex().justify_end().child(
+                                widgets::button(
+                                    "progress-cancel",
+                                    if cancelling { "Stopping…" } else { "Cancel" },
+                                    BtnVariant::Default,
+                                    theme,
+                                )
+                                .on_click(cx.listener(move |_ws: &mut Workspace, _, _, cx| {
+                                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    cx.notify();
+                                })),
+                            ),
+                        )
+                    })
                     .into_any_element()
             }
             Modal::EditClass => {
@@ -1772,6 +1844,9 @@ impl Workspace {
             .items_center()
             .justify_center()
             .bg(gpui::black().opacity(0.45))
+            // Block hover/scroll/clicks from reaching the canvas and panes
+            // underneath (otherwise the wheel zooms the image behind dialogs).
+            .occlude()
             .on_mouse_down(MouseButton::Left, backdrop_click)
             .child(
                 // Swallow presses inside the panel so they don't bubble to the
@@ -1961,6 +2036,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_unannotated_action))
             .on_action(cx.listener(Self::open_images_action))
             .on_action(cx.listener(Self::save_annotations_action))
+            .on_action(cx.listener(Self::auto_label_current_action))
             .on_key_down(cx.listener(Self::on_root_key_down))
             .on_key_up(cx.listener(Self::on_root_key_up))
             .on_modifiers_changed(cx.listener(Self::on_root_modifiers_changed))
@@ -2048,40 +2124,7 @@ impl Render for Workspace {
     }
 }
 
-/// Dropdown popover painted above all sibling content (deferred) and kept
-/// on-screen (anchored), positioned just below its toggle button.
-fn popover(
-    id: &'static str,
-    width: Pixels,
-    max_h: Pixels,
-    theme: &crate::ui::theme::Theme,
-    rows: Vec<gpui::AnyElement>,
-    on_out: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> gpui::AnyElement {
-    deferred(
-        anchored().snap_to_window_with_margin(px(8.)).child(
-            div()
-                .id(id)
-                .mt(px(4.))
-                .w(width)
-                .max_h(max_h)
-                .overflow_y_scroll()
-                .flex()
-                .flex_col()
-                .gap(px(1.))
-                .p(px(4.))
-                .rounded(px(8.))
-                .bg(theme.rgb(theme.bg_elevated))
-                .border_1()
-                .border_color(theme.rgb(theme.divider))
-                .shadow_lg()
-                .on_mouse_down_out(on_out)
-                .children(rows),
-        ),
-    )
-    .with_priority(1)
-    .into_any_element()
-}
+use super::widgets::popover;
 
 impl Focusable for Workspace {
     fn focus_handle(&self, _: &App) -> FocusHandle {
