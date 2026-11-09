@@ -12,6 +12,7 @@ use crate::state::paths;
 
 use super::canvas::{app_state, app_state_mut};
 use super::entry::Entry;
+use super::textarea::TextArea;
 use super::theme::{ThemeState, THEMES};
 use super::widgets::{self, BtnVariant};
 use super::workspace::Workspace;
@@ -148,6 +149,10 @@ pub struct SettingsView {
     batch_new: Option<i64>,
     preset_files: Vec<String>,
     preset_selected: Option<usize>,
+    new_game_name: Entity<Entry>,
+    new_game_classes: Entity<TextArea>,
+    /// Result of the last "Create Game" attempt: (ok, message).
+    new_game_status: Option<(bool, String)>,
     box_slot_selected: Option<u8>,
     auto_label: AutoLabelFields,
     focus: gpui::FocusHandle,
@@ -159,6 +164,19 @@ impl SettingsView {
             app_state(cx).classes.iter().map(|c| c.name.clone()).collect();
         let preset_files = scan_game_presets();
         let new_class = cx.new(|cx| Entry::new("New class name…", cx));
+        let new_game_name = cx.new(|cx| Entry::new("Game name (e.g. apex)…", cx));
+        let new_game_classes =
+            cx.new(|cx| TextArea::new("Paste the class list here — one class per line…", cx));
+        // Re-render the live class-count preview as the list is typed/pasted.
+        // (Only clears the status while typing: the Create button empties the
+        // entry and its deferred event must not wipe the success message.)
+        cx.subscribe(&new_game_classes, |view: &mut SettingsView, entry, _: &super::entry::EntryChanged, cx| {
+            if !entry.read(cx).text().is_empty() {
+                view.new_game_status = None;
+            }
+            cx.notify();
+        })
+        .detach();
         let al_settings = AutoLabelSettings::from_config(&app_state(cx).config.raw);
         let auto_label = AutoLabelFields::new(&al_settings, cx);
         Self {
@@ -172,6 +190,9 @@ impl SettingsView {
             batch_new: None,
             preset_files,
             preset_selected: None,
+            new_game_name,
+            new_game_classes,
+            new_game_status: None,
             box_slot_selected: None,
             auto_label,
             focus: cx.focus_handle(),
@@ -708,7 +729,7 @@ impl SettingsView {
 
     fn render_game_presets(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = ThemeState::current(cx);
-        let mut list = div().id("gp-list").max_h(px(320.)).overflow_y_scroll().flex().flex_col().rounded(px(8.)).p(px(4.)).bg(theme.rgba(theme.fg_muted, 0.06));
+        let mut list = div().id("gp-list").max_h(px(220.)).overflow_y_scroll().flex().flex_col().rounded(px(8.)).p(px(4.)).bg(theme.rgba(theme.fg_muted, 0.06));
         for (i, name) in self.preset_files.iter().enumerate() {
             let selected = self.preset_selected == Some(i);
             list = list.child(
@@ -773,7 +794,112 @@ impl SettingsView {
                         ),
                     ),
             )
+            .child(div().h(px(1.)).my_2().bg(theme.rgb(theme.divider)))
+            .child(self.render_new_game(cx))
             .into_any_element()
+    }
+
+    /// "New Game Classes": name + pasted class list → `data/<name>.txt`.
+    fn render_new_game(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = ThemeState::current(cx);
+        let parsed = crate::classes::parse_class_list(&self.new_game_classes.read(cx).text());
+        let preview: SharedString = if parsed.is_empty() {
+            "No classes yet.".into()
+        } else {
+            let shown: Vec<String> = parsed
+                .iter()
+                .take(40)
+                .enumerate()
+                .map(|(i, n)| format!("{i}: {n}"))
+                .collect();
+            let more = if parsed.len() > 40 { format!("  … +{} more", parsed.len() - 40) } else { String::new() };
+            format!("{} classes →  {}{more}", parsed.len(), shown.join("   ")).into()
+        };
+        let status = self.new_game_status.clone().map(|(ok, msg)| {
+            div()
+                .text_size(px(11.5))
+                .text_color(theme.rgb(if ok { theme.success } else { theme.error }))
+                .child(msg)
+        });
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .text_size(px(13.0))
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .child("New Game Classes"),
+            )
+            .child(widgets::caption(
+                "Name the game, then paste its class list (Ctrl+V). Lines, commas, data.yaml \"0: name\" and ['a', 'b'] lists all work. Order = class id.",
+                theme,
+            ))
+            .child(self.new_game_name.clone())
+            .child(self.new_game_classes.clone())
+            .child(
+                div()
+                    .id("ng-preview")
+                    .max_h(px(96.))
+                    .overflow_y_scroll()
+                    .rounded(px(6.))
+                    .p(px(6.))
+                    .bg(theme.rgba(theme.fg_muted, 0.06))
+                    .child(widgets::caption(preview, theme)),
+            )
+            .children(status)
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        widgets::button("ng-create", "Create Game", BtnVariant::Accent, theme).on_click(
+                            cx.listener(|view: &mut SettingsView, _, _, cx| view.create_game_preset(cx)),
+                        ),
+                    )
+                    .child(
+                        widgets::button("ng-clear", "Clear", BtnVariant::Default, theme).on_click(
+                            cx.listener(|view: &mut SettingsView, _, _, cx| {
+                                view.new_game_name.update(cx, |e, cx| e.set_text("", cx));
+                                view.new_game_classes.update(cx, |e, cx| e.set_text("", cx));
+                                view.new_game_status = None;
+                                cx.notify();
+                            }),
+                        ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn create_game_preset(&mut self, cx: &mut Context<Self>) {
+        let result = (|| {
+            let file = crate::classes::game_preset_file_name(&self.new_game_name.read(cx).text())?;
+            let names = crate::classes::parse_class_list(&self.new_game_classes.read(cx).text());
+            if names.is_empty() {
+                return Err("Paste at least one class.".to_string());
+            }
+            let path = paths::data_dir().join(&file);
+            let exists = self.preset_files.iter().any(|f| f.eq_ignore_ascii_case(&file)) || path.exists();
+            if exists {
+                return Err(format!("{file} already exists — pick another name."));
+            }
+            crate::classes::save_classes(&path, &names)
+                .map_err(|e| format!("Couldn't write {file}: {e}"))?;
+            Ok((file, names.len()))
+        })();
+        match result {
+            Ok((file, n)) => {
+                self.preset_files = scan_game_presets();
+                self.preset_selected = self.preset_files.iter().position(|f| *f == file);
+                self.new_game_name.update(cx, |e, cx| e.set_text("", cx));
+                self.new_game_classes.update(cx, |e, cx| e.set_text("", cx));
+                self.new_game_status =
+                    Some((true, format!("Created {file} with {n} classes — it's selected above, click Load Selected to use it.")));
+            }
+            Err(msg) => self.new_game_status = Some((false, msg)),
+        }
+        cx.notify();
     }
 
     fn render_box_presets(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {

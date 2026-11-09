@@ -88,6 +88,7 @@ pub fn build_keymap(config: &Config) -> Vec<KeyBinding> {
     }
 
     bindings.extend(crate::ui::entry::entry_key_bindings());
+    bindings.extend(crate::ui::textarea::text_area_key_bindings());
     let _ = BINDABLE_ACTIONS.len();
     bindings
 }

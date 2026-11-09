@@ -184,9 +184,96 @@ pub fn is_image_file(name: &str) -> bool {
     lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg")
 }
 
+/// Parses a pasted class list into unique class names, in order.
+/// Items may be separated by newlines, commas, semicolons or tabs, and may
+/// carry common list decorations that are stripped: `0: name` / `0 - name`
+/// (data.yaml / numbered lists), `- name` (YAML bullets), surrounding quotes
+/// or brackets (`['a', 'b']`). Spaces inside a name are kept.
+pub fn parse_class_list(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in text.split(['\n', '\r', ',', ';', '\t']) {
+        let mut item = raw.trim();
+        // "names:" header from a data.yaml (alone, or inline `names: [a, b]`).
+        if item.len() >= 6 && item[..6].eq_ignore_ascii_case("names:") {
+            item = item[6..].trim();
+        }
+        item = item.trim_matches(['[', ']', '{', '}']).trim();
+        // "12: name" / "12 - name" / "12. name" / "12) name". Non-colon
+        // separators need whitespace after them so "3-kill" stays intact.
+        let digits = item.len() - item.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        if digits > 0 {
+            let rest = item[digits..].trim_start();
+            if let Some(r) = rest.strip_prefix(':') {
+                item = r.trim();
+            } else if let Some(r) = rest.strip_prefix(['-', '.', ')'])
+                && r.starts_with(char::is_whitespace)
+            {
+                item = r.trim();
+            }
+        }
+        // "- name" YAML bullet
+        if let Some(r) = item.strip_prefix("- ") {
+            item = r.trim();
+        }
+        let item = item.trim_matches(['"', '\'']).trim();
+        if !item.is_empty() && !out.iter().any(|n| n == item) {
+            out.push(item.to_string());
+        }
+    }
+    out
+}
+
+/// Turns a typed game name into a preset filename (`<name>.txt`), or an
+/// error message. Rejects path separators and the reserved active-classes
+/// filename.
+pub fn game_preset_file_name(name: &str) -> Result<String, String> {
+    let mut stem = name.trim();
+    if stem.to_lowercase().ends_with(".txt") {
+        stem = stem[..stem.len() - 4].trim();
+    }
+    if stem.is_empty() {
+        return Err("Enter a game name.".into());
+    }
+    if stem.chars().any(|c| matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        || stem.starts_with('.')
+    {
+        return Err("Game name can't contain / \\ : * ? \" < > | or start with a dot.".into());
+    }
+    if stem.eq_ignore_ascii_case("predefined_classes") {
+        return Err("\"predefined_classes\" is reserved for the active class list.".into());
+    }
+    Ok(format!("{stem}.txt"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_class_list_handles_common_formats() {
+        let expect = vec!["kill_icon".to_string(), "assist icon".to_string(), "kill_streak".to_string()];
+        assert_eq!(parse_class_list("kill_icon\r\nassist icon\nkill_streak\n"), expect);
+        assert_eq!(parse_class_list("kill_icon, assist icon, kill_streak"), expect);
+        assert_eq!(parse_class_list("['kill_icon', 'assist icon', 'kill_streak']"), expect);
+        assert_eq!(parse_class_list("names:\n  0: kill_icon\n  1: assist icon\n  2: kill_streak"), expect);
+        assert_eq!(parse_class_list("- kill_icon\n- assist icon\n- kill_streak\n- kill_icon"), expect);
+        assert_eq!(parse_class_list("1. kill_icon\t2) assist icon; 3 - kill_streak"), expect);
+        assert_eq!(parse_class_list("names: ['kill_icon', 'assist icon', 'kill_streak']"), expect);
+        // digits that are part of a name stay
+        assert_eq!(
+            parse_class_list("1v1_icon\n2x_multiplier\n3-kill"),
+            vec!["1v1_icon", "2x_multiplier", "3-kill"]
+        );
+    }
+
+    #[test]
+    fn game_preset_file_names() {
+        assert_eq!(game_preset_file_name(" Apex ").unwrap(), "Apex.txt");
+        assert_eq!(game_preset_file_name("apex.txt").unwrap(), "apex.txt");
+        assert!(game_preset_file_name("").is_err());
+        assert!(game_preset_file_name("../x").is_err());
+        assert!(game_preset_file_name("predefined_classes").is_err());
+    }
 
     #[test]
     fn colors_match_python() {
