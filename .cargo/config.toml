@@ -1,0 +1,4 @@
+# Git Bash's GNU coreutils `link` shadows MSVC's link.exe in PATH; pin the
+# real linker explicitly for the MSVC target.
+[target.x86_64-pc-windows-msvc]
+linker = "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC\\14.44.35207\\bin\\Hostx64\\x64\\link.exe"

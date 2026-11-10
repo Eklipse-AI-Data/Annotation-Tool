@@ -1,3 +1,0 @@
-Pillow>=10.0
-# Optional GPU/CPU-accelerated resizing (app falls back to Pillow without it):
-# opencv-python>=4.8

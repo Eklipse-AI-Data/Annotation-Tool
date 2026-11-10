@@ -1,0 +1,12 @@
+kill_banner
+medal
+death
+spectating_banner
+killcam
+victory
+defeat
+round_win
+round_loss
+mini_map
+weapon
+gamemode

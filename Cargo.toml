@@ -1,0 +1,31 @@
+[package]
+name = "annotation-tool"
+version = "0.1.0"
+edition = "2024"
+description = "YOLO annotation tool (Rust/GPUI port of Annotation-Tool)"
+license = "MIT"
+
+[dependencies]
+gpui = "=0.2.2"
+image = "0.25"
+rfd = "0.15"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+unicode-segmentation = "1"
+smallvec = "1"
+anyhow = "1"
+smol = "2"
+ureq = { version = "2.12", features = ["json"] }
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+# Windows PDF renderer (labeling-guide import).
+windows = { version = "0.61", features = ["std", "Data_Pdf", "Foundation", "Storage", "Storage_Streams", "Win32_System_WinRT"] }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

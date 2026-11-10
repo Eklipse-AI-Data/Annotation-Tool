@@ -1,6 +1,10 @@
-__pycache__/
-*.pyc
-venv/
-.vscode/
-Images/
+target/
 session.json
+*.png
+
+# CLIProxyAPI binary, generated config (contains the client key) and logs
+/cliproxy/
+
+# Local settings (contains the auto-label API key) and Python bytecode
+config.json
+__pycache__/

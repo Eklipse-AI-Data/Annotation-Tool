@@ -1,0 +1,109 @@
+{
+  "pages": [
+    {
+      "file": "page_003.png",
+      "source": "Warzone MW4 Label requirement (1).pdf",
+      "page": 3,
+      "classes": [
+        "plane_indicator",
+        "choose_landing_zone_banner"
+      ]
+    },
+    {
+      "file": "page_004.png",
+      "source": "Warzone MW4 Label requirement (1).pdf",
+      "page": 4,
+      "classes": [
+        "xp_notif"
+      ]
+    },
+    {
+      "file": "page_005.png",
+      "source": "Warzone MW4 Label requirement (1).pdf",
+      "page": 5,
+      "classes": [
+        "down_banner",
+        "red_down_msg"
+      ]
+    },
+    {
+      "file": "page_006.png",
+      "source": "Warzone MW4 Label requirement (1).pdf",
+      "page": 6,
+      "classes": [
+        "kill_banner",
+        "red_kill_msg"
+      ]
+    },
+    {
+      "file": "page_007.png",
+      "source": "Warzone MW4 Label requirement (1).pdf",
+      "page": 7,
+      "classes": [
+        "chain_kill_popup"
+      ]
+    },
+    {
+      "file": "page_008.png",
+      "source": "Warzone MW4 Label requirement (1).pdf",
+      "page": 8,
+      "classes": [
+        "wz_victory",
+        "wz_defeat"
+      ]
+    },
+    {
+      "file": "page_009.png",
+      "source": "Warzone MW4 Label requirement (1).pdf",
+      "page": 9,
+      "classes": [
+        "post_match_scoreboard"
+      ]
+    },
+    {
+      "file": "page_010.png",
+      "source": "Warzone MW4 Label requirement (1).pdf",
+      "page": 10,
+      "classes": [
+        "wz_pre_deployment"
+      ]
+    },
+    {
+      "file": "page_011.png",
+      "source": "Warzone MW4 Label requirement (1).pdf",
+      "page": 11,
+      "classes": [
+        "killcam",
+        "death_banner",
+        "spectating",
+        "map"
+      ]
+    },
+    {
+      "file": "page_012.png",
+      "source": "Warzone MW4 Label requirement (1).pdf",
+      "page": 12,
+      "classes": [
+        "map",
+        "weapon_board"
+      ]
+    },
+    {
+      "file": "page_013.png",
+      "source": "Warzone MW4 Label requirement (1).pdf",
+      "page": 13,
+      "classes": [
+        "released_banner"
+      ]
+    },
+    {
+      "file": "page_014.png",
+      "source": "COD _ Warzone MW4 Specific Model (2).png",
+      "page": 1,
+      "classes": [
+        "circle_number",
+        "squad_scoreboard"
+      ]
+    }
+  ]
+}
