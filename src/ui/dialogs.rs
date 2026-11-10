@@ -1381,7 +1381,12 @@ impl SettingsView {
                     })
                     .when(proxy::log_path().is_file(), |el| {
                         el.child(widgets::header_link("al-proxy-log", "Open log", theme).on_click(|_, _, _| {
+                            #[cfg(windows)]
                             let _ = std::process::Command::new("notepad.exe").arg(proxy::log_path()).spawn();
+                            #[cfg(target_os = "macos")]
+                            let _ = std::process::Command::new("open").arg("-t").arg(proxy::log_path()).spawn();
+                            #[cfg(all(unix, not(target_os = "macos")))]
+                            let _ = std::process::Command::new("xdg-open").arg(proxy::log_path()).spawn();
                         }))
                     }),
             )

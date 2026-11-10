@@ -31,11 +31,54 @@ pub fn app_home() -> PathBuf {
     if cfg!(debug_assertions) {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
     } else {
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        let exe = std::env::current_exe().ok();
+        #[cfg(target_os = "macos")]
+        if let Some(home) = exe.as_deref().and_then(macos_bundle_home) {
+            return home;
+        }
+        exe.and_then(|p| p.parent().map(|p| p.to_path_buf()))
             .unwrap_or_else(|| PathBuf::from("."))
     }
+}
+
+/// Inside a macOS `.app` bundle the executable's folder may be read-only
+/// (App Translocation, /Applications), so home moves to
+/// `~/Library/Application Support/Annotation Tool`. The bundled
+/// `Contents/Resources/data` is copied there the first time.
+#[cfg(target_os = "macos")]
+fn macos_bundle_home(exe: &std::path::Path) -> Option<PathBuf> {
+    use std::sync::OnceLock;
+    static HOME: OnceLock<Option<PathBuf>> = OnceLock::new();
+    HOME.get_or_init(|| {
+        let macos_dir = exe.parent()?;
+        let contents = macos_dir.parent()?;
+        if macos_dir.file_name()? != "MacOS" || contents.file_name()? != "Contents" {
+            return None;
+        }
+        let home = PathBuf::from(std::env::var_os("HOME")?).join("Library/Application Support/Annotation Tool");
+        let data = home.join("data");
+        if !data.exists() {
+            let _ = copy_dir(&contents.join("Resources/data"), &data);
+        }
+        let _ = std::fs::create_dir_all(&home);
+        Some(home)
+    })
+    .clone()
+}
+
+#[cfg(target_os = "macos")]
+fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &to)?;
+        } else {
+            std::fs::copy(entry.path(), to)?;
+        }
+    }
+    Ok(())
 }
 
 fn home_flag_value(args: &[String]) -> Option<PathBuf> {

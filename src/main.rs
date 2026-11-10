@@ -7,6 +7,9 @@
 //! directory (release) / crate directory (debug). Point it at the Python
 //! checkout to share state between both tools.
 
+// Release builds on Windows are GUI apps: no console window alongside.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod actions;
 mod autolabel;
 mod classes;
