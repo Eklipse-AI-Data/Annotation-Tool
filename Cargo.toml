@@ -1,6 +1,6 @@
 [package]
 name = "annotation-tool"
-version = "0.1.0"
+version = "2.0.0"
 edition = "2024"
 description = "YOLO annotation tool (Rust/GPUI port of Annotation-Tool)"
 license = "MIT"
