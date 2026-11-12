@@ -31,6 +31,10 @@ Requires the Rust MSVC toolchain (Visual Studio C++ Build Tools + Windows SDK).
 cargo run --release
 ```
 
+Contributing? Read [`docs/STATE_MACHINES.md`](docs/STATE_MACHINES.md) first. It maps every
+mode and async lifecycle in the app (canvas image and gesture, filmstrip, presets, tasks,
+dialogs, keyboard contexts) and lists the rules for adding new ones.
+
 ## App home
 
 Session/config/classes resolve from (in order):

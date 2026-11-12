@@ -34,11 +34,24 @@ pub struct Toast {
     pub born: Instant,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PresetPending {
-    pub slot: u8,
-    pub key: String,
-    pub shown: bool,
+/// The Ctrl+1..9 preset key: a *tap* applies the slot, a *hold* (longer
+/// than `PRESET_HOLD_MS`) previews it until Ctrl is released.
+///
+/// ```text
+///   Idle ──ctrl+digit down──▶ Pressed{slot,ticket} ──digit up──▶ Idle (apply)
+///                               │  └──ctrl up──▶ Idle (nothing)
+///                               └─hold timer(ticket)──▶ Previewing{slot} ──ctrl up──▶ Idle (hide)
+/// ```
+/// `ticket` ties the hold timer to the press that started it, so a timer
+/// left over from an earlier tap can't promote a newer press early.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PresetKey {
+    #[default]
+    Idle,
+    Pressed { slot: u8, ticket: u64 },
+    /// Hold confirmed. Further Ctrl+digit presses are ignored until Ctrl is
+    /// released (the old `preset_lock`).
+    Previewing { slot: u8 },
 }
 
 pub enum Modal {
@@ -91,7 +104,9 @@ pub struct Workspace {
 
     pub modal: Option<Modal>,
     pub task_running: bool,
-    pub startup_alerts: Vec<(String, String)>,
+    /// Alerts waiting for the dialog slot (FIFO): startup warnings, and
+    /// alerts raised while a Progress/Alert/Confirm dialog was showing.
+    pub queued_alerts: std::collections::VecDeque<(String, String)>,
 
     // Popover/dropdown state
     pub recents_open: bool,
@@ -102,9 +117,10 @@ pub struct Workspace {
     pub filter_open: bool,
     pub filter_class_id: Option<i64>,
 
-    // Preset hold gesture
-    pub preset_pending: Option<PresetPending>,
-    pub preset_lock: bool,
+    // Preset tap/hold gesture
+    pub preset_key: PresetKey,
+    /// Last issued `PresetKey::Pressed` ticket.
+    pub preset_ticket: u64,
 
     // Background scan guard (mirrors `_filter_scan_running`)
     pub filter_scan_running: bool,
@@ -149,7 +165,7 @@ impl Workspace {
         .detach();
 
         cx.subscribe(&filmstrip, |ws: &mut Workspace, _strip, click: &FilmstripClick, cx| {
-            if ws.modal.is_none() {
+            if ws.modal.is_none() && !ws.task_running && !ws.filter_scan_running {
                 let ix = click.0;
                 ws.guard_unsaved(move |ws, cx| ws.load_image(ix, cx), cx);
             }
@@ -178,14 +194,14 @@ impl Workspace {
             validation_issues: Vec::new(),
             modal: None,
             task_running: false,
-            startup_alerts: Vec::new(),
+            queued_alerts: std::collections::VecDeque::new(),
             recents_open: false,
             popover_closed_at: None,
             selected_recent: None,
             filter_open: false,
             filter_class_id: None,
-            preset_pending: None,
-            preset_lock: false,
+            preset_key: PresetKey::Idle,
+            preset_ticket: 0,
             filter_scan_running: false,
             box_list_anchor: None,
             box_list_dragging: false,
@@ -232,11 +248,41 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Shows an alert. If a Progress, Alert or Confirm dialog is already up,
+    /// the alert waits its turn instead of replacing it — replacing Progress
+    /// used to strand a running task without its Cancel button.
     pub fn alert(&mut self, title: &str, message: impl Into<String>) {
+        if matches!(
+            self.modal,
+            Some(Modal::Progress { .. } | Modal::Alert { .. } | Modal::Confirm { .. })
+        ) {
+            self.queued_alerts.push_back((title.to_string(), message.into()));
+            return;
+        }
         self.modal = Some(Modal::Alert {
             title: title.to_string().into(),
             message: message.into(),
         });
+    }
+
+    /// Background-task lifecycle: `Idle ⇄ Running`. Every task (Auto Label
+    /// batch, class remap, batch replace) enters with `begin_task` and leaves
+    /// through `end_task`, whatever the outcome.
+    pub fn begin_task(&mut self, progress: Modal) {
+        debug_assert!(matches!(progress, Modal::Progress { .. }));
+        self.task_running = true;
+        self.modal = Some(progress);
+    }
+
+    /// Leaves the Running state: closes the Progress dialog, re-enables
+    /// input, then shows any alert that queued up meanwhile.
+    pub fn end_task(&mut self, cx: &mut Context<Self>) {
+        if let Some(Modal::Progress { .. }) = self.modal {
+            self.modal = None;
+        }
+        self.task_running = false;
+        self.show_next_queued_alert(cx);
+        cx.notify();
     }
 
     pub fn confirm(
@@ -261,8 +307,12 @@ impl Workspace {
         entry_focus.is_focused(window) || self.autolabel.any_entry_focused(window, cx)
     }
 
+    /// Workspace shortcuts are ignored while a dialog is up, a text field
+    /// has focus, a background task runs, or an image-filter scan is
+    /// swapping the image list (no image is current until it finishes, and
+    /// edits made in between were dropped when the filtered list loaded).
     pub fn blocked(&self, window: &Window, cx: &App) -> bool {
-        self.modal.is_some() || self.entry_focused(window, cx) || self.task_running
+        self.modal.is_some() || self.entry_focused(window, cx) || self.task_running || self.filter_scan_running
     }
 
     pub fn refresh_after_canvas_change(&mut self, cx: &mut Context<Self>) {
@@ -1598,6 +1648,7 @@ impl Workspace {
             // Clicking the backdrop dismisses alerts/confirm (not progress).
             if !ws.task_running {
                 ws.modal = None;
+                ws.show_next_queued_alert(cx);
                 cx.notify();
             }
         });
@@ -1624,6 +1675,7 @@ impl Workspace {
                     if let Some(action) = on_yes {
                         action(ws, window, cx);
                     }
+                    ws.show_next_queued_alert(cx);
                     cx.notify();
                 });
                 let cancel = cx.listener(move |ws: &mut Workspace, _: &gpui::ClickEvent, window, cx| {
@@ -1669,6 +1721,7 @@ impl Workspace {
                                     widgets::button("confirm-cancel", "Cancel", BtnVariant::Default, theme)
                                         .on_click(cx.listener(|ws: &mut Workspace, _, _, cx| {
                                             ws.modal = None;
+                                            ws.show_next_queued_alert(cx);
                                             cx.notify();
                                         })),
                                 )
@@ -1685,6 +1738,7 @@ impl Workspace {
                                         if let Some(action) = on_no {
                                             action(ws, window, cx);
                                         }
+                                        ws.show_next_queued_alert(cx);
                                         cx.notify();
                                     })),
                             )
@@ -1724,7 +1778,7 @@ impl Workspace {
                             widgets::button("alert-ok", "OK", BtnVariant::Accent, theme).on_click(
                                 cx.listener(|ws: &mut Workspace, _, _, cx| {
                                     ws.modal = None;
-                                    ws.show_next_startup_alert(cx);
+                                    ws.show_next_queued_alert(cx);
                                     cx.notify();
                                 }),
                             ),
@@ -2009,6 +2063,7 @@ impl Render for Workspace {
 
         let root: gpui::Stateful<gpui::Div> = div()
             .id("workspace-root")
+            .key_context(crate::actions::WORKSPACE_CONTEXT)
             .relative()
             .size_full()
             .flex()

@@ -37,16 +37,29 @@ actions!(
     ]
 );
 
+/// Key context set on the workspace root element.
+pub const WORKSPACE_CONTEXT: &str = "Workspace";
+/// Key context set on the Settings panel (it captures raw keystrokes when
+/// rebinding shortcuts).
+pub const SETTINGS_CONTEXT: &str = "Settings";
+
+/// Predicate for every workspace shortcut: active anywhere in the workspace
+/// *except* while a text field has focus or the Settings panel is capturing
+/// keys. Scoping by context (instead of guarding inside the action handler)
+/// matters: a binding that matches consumes the keystroke, so a global `u`
+/// binding used to swallow every "u" typed into a text field even though the
+/// handler then did nothing. Unmatched keystrokes fall through to text input.
+pub const WORKSPACE_SHORTCUTS: &str = "Workspace && !TextInput && !TextArea && !Settings";
+
 /// Builds all keybindings: config-driven actions plus fixed shortcuts.
-/// Bindings are global (no context) — the workspace guards them while an
-/// entry is focused, exactly like the Python tool's Entry-focus guard.
 pub fn build_keymap(config: &Config) -> Vec<KeyBinding> {
     let mut bindings = Vec::new();
+    let ctx = Some(WORKSPACE_SHORTCUTS);
 
     macro_rules! bind_config {
         ($action_id:expr, $action:path) => {
             if let Some(keys) = config.gpui_binding($action_id) {
-                bindings.push(KeyBinding::new(keys.as_str(), $action, None));
+                bindings.push(KeyBinding::new(keys.as_str(), $action, ctx));
             }
         };
     }
@@ -65,26 +78,26 @@ pub fn build_keymap(config: &Config) -> Vec<KeyBinding> {
 
     // Fixed shortcuts (Python hardcoded)
     for keys in ["ctrl-=", "ctrl-plus", "ctrl-+"] {
-        bindings.push(KeyBinding::new(keys, ZoomIn, None));
+        bindings.push(KeyBinding::new(keys, ZoomIn, ctx));
     }
     for keys in ["ctrl--", "ctrl-minus"] {
-        bindings.push(KeyBinding::new(keys, ZoomOut, None));
+        bindings.push(KeyBinding::new(keys, ZoomOut, ctx));
     }
-    bindings.push(KeyBinding::new("ctrl-0", ZoomReset, None));
-    bindings.push(KeyBinding::new("?", ToggleHelpOverlay, None));
-    bindings.push(KeyBinding::new("shift-/", ToggleHelpOverlay, None));
-    bindings.push(KeyBinding::new("u", ToggleUnannotatedFilter, None));
-    bindings.push(KeyBinding::new("ctrl-a", SelectAllBoxes, None));
-    bindings.push(KeyBinding::new("ctrl-s", SaveAnnotations, None));
-    bindings.push(KeyBinding::new("ctrl-shift-o", OpenImages, None));
-    bindings.push(KeyBinding::new("ctrl-shift-a", AutoLabelCurrent, None));
+    bindings.push(KeyBinding::new("ctrl-0", ZoomReset, ctx));
+    bindings.push(KeyBinding::new("?", ToggleHelpOverlay, ctx));
+    bindings.push(KeyBinding::new("shift-/", ToggleHelpOverlay, ctx));
+    bindings.push(KeyBinding::new("u", ToggleUnannotatedFilter, ctx));
+    bindings.push(KeyBinding::new("ctrl-a", SelectAllBoxes, ctx));
+    bindings.push(KeyBinding::new("ctrl-s", SaveAnnotations, ctx));
+    bindings.push(KeyBinding::new("ctrl-shift-o", OpenImages, ctx));
+    bindings.push(KeyBinding::new("ctrl-shift-a", AutoLabelCurrent, ctx));
 
     // Left/Right always navigate (duplicated with config bindings in Python)
     if config.gpui_binding("next_image").as_deref() != Some("right") {
-        bindings.push(KeyBinding::new("right", NextImage, None));
+        bindings.push(KeyBinding::new("right", NextImage, ctx));
     }
     if config.gpui_binding("prev_image").as_deref() != Some("left") {
-        bindings.push(KeyBinding::new("left", PrevImage, None));
+        bindings.push(KeyBinding::new("left", PrevImage, ctx));
     }
 
     bindings.extend(crate::ui::entry::entry_key_bindings());
@@ -93,8 +106,10 @@ pub fn build_keymap(config: &Config) -> Vec<KeyBinding> {
     bindings
 }
 
-/// Re-binds the keymap after settings change.
+/// (Re)builds the whole keymap. Clears first: `bind_keys` appends, so without
+/// the clear a rebound shortcut kept firing on its old key too.
 pub fn apply_keymap(cx: &mut gpui::App, config: &Config) {
+    cx.clear_key_bindings();
     cx.bind_keys(build_keymap(config));
 }
 
@@ -114,5 +129,21 @@ mod tests {
         config.set_binding("delete_box", "<q>");
         let bindings = build_keymap(&config);
         assert!(bindings.len() > 20);
+    }
+
+    /// Regression: bare-letter shortcuts must not match inside text fields,
+    /// or the keystroke is consumed and the letter never gets typed.
+    #[test]
+    fn workspace_shortcuts_do_not_match_in_text_fields() {
+        use gpui::{KeyBindingContextPredicate, KeyContext};
+        let pred = KeyBindingContextPredicate::parse(WORKSPACE_SHORTCUTS).unwrap();
+        let ws = KeyContext::parse(WORKSPACE_CONTEXT).unwrap();
+        let entry = KeyContext::parse("TextInput").unwrap();
+        let area = KeyContext::parse("TextArea").unwrap();
+        let settings = KeyContext::parse(SETTINGS_CONTEXT).unwrap();
+        assert!(pred.depth_of(&[ws.clone()]).is_some());
+        assert!(pred.depth_of(&[ws.clone(), entry]).is_none());
+        assert!(pred.depth_of(&[ws.clone(), area]).is_none());
+        assert!(pred.depth_of(&[ws, settings]).is_none());
     }
 }

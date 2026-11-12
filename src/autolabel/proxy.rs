@@ -59,6 +59,13 @@ struct Manager {
 static MANAGER: Mutex<Manager> =
     Mutex::new(Manager { child: None, params: None, state: ProxyState::Off, login: None });
 
+/// Serializes the decide-stop-spawn part of [`start`]. The `MANAGER` lock
+/// can't be held across it (spawning and `port_open` block), and without
+/// this two concurrent `start` calls (e.g. Settings "Save" plus an Auto Label
+/// action) could both pass the "already running?" check and both spawn —
+/// orphaning the first child and reporting Failed while it served.
+static START: Mutex<()> = Mutex::new(());
+
 fn manager() -> std::sync::MutexGuard<'static, Manager> {
     MANAGER.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -238,6 +245,9 @@ fn launch_params(s: &AutoLabelSettings) -> Result<LaunchParams, String> {
 /// Starts the proxy (or restarts it when its settings changed) and waits until
 /// it accepts connections. Blocking — call from a background thread.
 pub fn start(s: &AutoLabelSettings) -> ProxyState {
+    // Held until the child is registered as `Starting`; a concurrent caller
+    // with the same settings then sees `Starting` and returns.
+    let start_guard = START.lock().unwrap_or_else(|e| e.into_inner());
     let params = match launch_params(s) {
         Ok(p) => p,
         Err(e) => {
@@ -298,6 +308,7 @@ pub fn start(s: &AutoLabelSettings) -> ProxyState {
         m.params = Some(params.clone());
         m.state = ProxyState::Starting;
     }
+    drop(start_guard);
 
     let deadline = Instant::now() + READY_TIMEOUT;
     loop {

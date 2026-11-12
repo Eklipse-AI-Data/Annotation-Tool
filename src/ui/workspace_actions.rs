@@ -16,7 +16,7 @@ use crate::yolo::{self, BBox};
 
 use super::canvas::{app_state, app_state_mut};
 use super::dialogs::SettingsView;
-use super::workspace::{Modal, Workspace};
+use super::workspace::{Modal, PresetKey, Workspace};
 
 const PRESET_HOLD_MS: u64 = 250;
 
@@ -81,7 +81,7 @@ impl Workspace {
         // Directory existence checks (Python: startup warning dialogs).
         let image_dir = app_state(cx).image_dir.clone();
         if !image_dir.is_empty() && !Path::new(&image_dir).is_dir() {
-            self.startup_alerts.push((
+            self.queued_alerts.push_back((
                 "Session Warning".into(),
                 format!(
                     "The last image directory no longer exists:\n{image_dir}\n\nPlease select a new directory."
@@ -109,13 +109,13 @@ impl Workspace {
             }
             self.refresh_class_counts(cx);
         }
-        self.show_next_startup_alert(cx);
+        self.show_next_queued_alert(cx);
         self.start_autosave(cx);
     }
 
-    pub fn show_next_startup_alert(&mut self, cx: &mut Context<Self>) {
+    pub fn show_next_queued_alert(&mut self, cx: &mut Context<Self>) {
         if self.modal.is_none() {
-            if let Some((title, message)) = self.startup_alerts.pop() {
+            if let Some((title, message)) = self.queued_alerts.pop_front() {
                 self.alert(&title, message);
                 cx.notify();
             }
@@ -128,8 +128,13 @@ impl Workspace {
             loop {
                 smol::Timer::after(std::time::Duration::from_secs(30)).await;
                 let Ok(continue_running) = cx.update(|cx| {
-                    ws.update(cx, |_ws, cx| {
-                        if app_state(cx).auto_save && app_state(cx).current_image_index != -1 {
+                    ws.update(cx, |ws, cx| {
+                        // Only real edits, and never while a background task
+                        // (Auto Label batch, class remap) may be rewriting
+                        // label files: re-saving an unchanged image used to
+                        // overwrite labels the batch had just written.
+                        let state = app_state(cx);
+                        if state.auto_save && state.is_dirty() && !ws.task_running {
                             app_state_mut(cx).save_annotations();
                         }
                         app_state_mut(cx).save_session();
@@ -160,39 +165,11 @@ impl Workspace {
         let key = &event.keystroke.key;
         let modifiers = &event.keystroke.modifiers;
 
-        // Escape: close modal/popover first; otherwise deselect class.
+        // Escape reaches this raw handler only when no keybinding matched
+        // it (e.g. a text field or Settings has focus); otherwise it arrives
+        // as the configurable DeselectClass action. Both run the same cascade.
         if key == "escape" {
-            if self.task_running {
-                return;
-            }
-            if let Some(Modal::Settings(_)) = self.modal {
-                self.modal = None;
-                cx.notify();
-                return;
-            }
-            if self.recents_open || self.filter_open {
-                self.recents_open = false;
-                self.filter_open = false;
-                cx.notify();
-                return;
-            }
-            if matches!(self.modal, Some(Modal::EditClass) | Some(Modal::Alert { .. }) | Some(Modal::Confirm { .. })) {
-                self.modal = None;
-                self.show_next_startup_alert(cx);
-                cx.notify();
-                return;
-            }
-            if self.validation_visible {
-                self.validation_visible = false;
-                cx.notify();
-                return;
-            }
-            // Escape is exempt from the entry-focus guard (Python parity).
-            if !self.task_running {
-                app_state_mut(cx).current_class_index = -1;
-                app_state_mut(cx).clear_preview();
-                cx.notify();
-            }
+            self.escape_cascade(cx);
             return;
         }
 
@@ -210,49 +187,44 @@ impl Workspace {
             }
             None
         };
-        let is_numpad = false; // 0.2.2 Keystroke has no keypad flag
+        // Presets edit the boxes behind any dialog, so dialogs block them.
+        let presets_blocked = self.modal.is_some() || self.entry_focused(window, cx);
 
         if modifiers.control && !modifiers.shift && !modifiers.alt {
             if let Some(slot) = slot_from_key(key) {
-                if self.entry_focused(window, cx) || self.preset_lock {
+                if presets_blocked {
                     return;
                 }
-                let key_name = if is_numpad { format!("numpad{slot}") } else { format!("digit{slot}") };
-                // Skip when the same hold is already pending.
-                if let Some(p) = &self.preset_pending {
-                    if p.slot == slot && p.key == key_name {
-                        return;
-                    }
+                match self.preset_key {
+                    PresetKey::Previewing { .. } => return, // locked until Ctrl up
+                    PresetKey::Pressed { slot: held, .. } if held == slot => return, // key repeat
+                    PresetKey::Idle | PresetKey::Pressed { .. } => {}
                 }
-                self.preset_pending = Some(super::workspace::PresetPending {
-                    slot,
-                    key: key_name,
-                    shown: false,
-                });
-                let ws = cx.entity();
-                cx.spawn(async move |_this: gpui::WeakEntity<Workspace>, cx: &mut gpui::AsyncApp| {
+                self.preset_ticket += 1;
+                let ticket = self.preset_ticket;
+                self.preset_key = PresetKey::Pressed { slot, ticket };
+                cx.spawn(async move |this: gpui::WeakEntity<Workspace>, cx: &mut gpui::AsyncApp| {
                     smol::Timer::after(std::time::Duration::from_millis(PRESET_HOLD_MS)).await;
-                    let _ = cx.update(|cx| {
-                        ws.update(cx, |ws, cx| {
-                            if let Some(p) = &mut ws.preset_pending {
-                                if !p.shown {
-                                    p.shown = true;
-                                    ws.preset_lock = true;
-                                    let slot = p.slot;
-                                    ws.preview_preset(slot, false, cx);
-                                }
-                            }
-                            cx.notify();
-                        });
-                    });
+                    let _ = this.update(cx, |ws, cx| ws.preset_hold_elapsed(ticket, cx));
                 })
                 .detach();
             }
         } else if modifiers.control && modifiers.shift && !modifiers.alt {
             if let Some(slot) = slot_from_key(key) {
-                if !self.entry_focused(window, cx) {
+                if !presets_blocked {
                     self.save_preset(slot, cx);
                 }
+            }
+        }
+    }
+
+    /// Hold timer for the press identified by `ticket`: still held → preview.
+    fn preset_hold_elapsed(&mut self, ticket: u64, cx: &mut Context<Self>) {
+        if let PresetKey::Pressed { slot, ticket: current } = self.preset_key {
+            if current == ticket {
+                self.preset_key = PresetKey::Previewing { slot };
+                self.preview_preset(slot, false, cx);
+                cx.notify();
             }
         }
     }
@@ -274,20 +246,12 @@ impl Workspace {
             None
         };
         if let Some(slot) = slot_from_key(key) {
-            let key_name = if false {
-                format!("numpad{slot}")
-            } else {
-                format!("digit{slot}")
-            };
-            if let Some(p) = self.preset_pending.take() {
-                if p.slot == slot && p.key == key_name {
-                    if !p.shown {
-                        // Tap → apply
-                        self.apply_preset(slot, cx);
-                    }
-                    // If preview was shown, do nothing (release of ctrl hides it).
-                } else {
-                    self.preset_pending = Some(p);
+            // Released before the hold timer: a tap → apply. (Releasing the
+            // digit while Previewing does nothing; Ctrl up hides it.)
+            if let PresetKey::Pressed { slot: held, .. } = self.preset_key {
+                if held == slot {
+                    self.preset_key = PresetKey::Idle;
+                    self.apply_preset(slot, cx);
                 }
             }
         }
@@ -300,17 +264,21 @@ impl Workspace {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !event.modifiers.control {
-            self.preset_pending = None;
-            if self.preset_lock {
-                self.preset_lock = false;
+        if event.modifiers.control {
+            return;
+        }
+        match std::mem::take(&mut self.preset_key) {
+            PresetKey::Idle | PresetKey::Pressed { .. } => {}
+            PresetKey::Previewing { slot } => {
+                // Hide only the preview this hold put up — not, say, Auto
+                // Label suggestions that arrived meanwhile.
                 let state = app_state(cx);
-                if state.preview_visible {
-                    let slot = state.preview_slot;
+                let ours = state.preview_visible
+                    && state.preview_source == Some(PreviewSource::Preset)
+                    && state.preview_slot == Some(slot);
+                if ours {
                     app_state_mut(cx).clear_preview();
-                    if let Some(slot) = slot {
-                        self.set_status(format!("Preset {slot} preview hidden"), cx);
-                    }
+                    self.set_status(format!("Preset {slot} preview hidden"), cx);
                 }
                 cx.notify();
             }
@@ -341,6 +309,13 @@ impl Workspace {
             };
             let _ = cx.update(|cx| {
                 ws.update(cx, |ws, cx| {
+                    // A task may have started while the (non-modal) picker
+                    // was open; it is writing into the current folder.
+                    if ws.task_running {
+                        ws.alert("Busy", "Wait for the running task to finish before opening another folder.");
+                        cx.notify();
+                        return;
+                    }
                     // Autosave the current image into its folder first.
                     let (idx, auto) = {
                         let s = app_state(cx);
@@ -357,10 +332,7 @@ impl Workspace {
     }
 
     pub fn finish_open_dir(&mut self, image_dir: String, cx: &mut Context<Self>) {
-        if let Some(Modal::Progress { .. }) = self.modal {
-            self.modal = None;
-        }
-        self.task_running = false;
+        debug_assert!(!self.task_running, "folder switch during a task");
         {
             let state = app_state_mut(cx);
             state.current_image_index = -1;
@@ -481,7 +453,6 @@ impl Workspace {
             state.current_image_size = None;
         }
         self.canvas.update(cx, |canvas, cx| {
-            canvas.current = None;
             let path = PathBuf::from(&app_state(cx).image_dir).join(&app_state(cx).image_list[index]);
             canvas.request_image(path, cx);
         });
@@ -628,6 +599,7 @@ impl Workspace {
             let s = app_state(cx);
             (s.image_dir.clone(), s.image_list.clone())
         };
+        crate::images::begin_preload_batch();
         for offset in [1i64, 2, 3, -1, -2] {
             let target = index as i64 + offset;
             if target >= 0 && (target as usize) < list.len() {
@@ -645,10 +617,7 @@ impl Workspace {
         state.boxes.clear();
         state.selected_indices.clear();
         state.current_image_size = None;
-        self.canvas.update(cx, |canvas, cx| {
-            canvas.current = None;
-            cx.notify();
-        });
+        self.canvas.update(cx, |canvas, cx| canvas.clear_image(cx));
     }
 
     pub fn next_image_action(&mut self, _: &NextImage, window: &mut Window, cx: &mut Context<Self>) {
@@ -687,13 +656,36 @@ impl Workspace {
     }
 
     pub fn deselect_action(&mut self, _: &DeselectClass, _window: &mut Window, cx: &mut Context<Self>) {
-        // Handled by the raw escape path too; the action binding may use a
-        // non-escape key, so apply deselect semantics here as well.
+        self.escape_cascade(cx);
+    }
+
+    /// Escape / Deselect: dismiss the topmost transient layer; with none
+    /// open, deselect the class and clear any preview. Exempt from the
+    /// entry-focus guard (Python parity). Order = visual stacking, top first.
+    pub fn escape_cascade(&mut self, cx: &mut Context<Self>) {
         if self.task_running {
-            return;
+            return; // the Progress dialog owns the screen
         }
-        app_state_mut(cx).current_class_index = -1;
-        app_state_mut(cx).clear_preview();
+        if let Some(Modal::Settings(_)) = self.modal {
+            self.modal = None;
+        } else if self.recents_open || self.filter_open {
+            self.recents_open = false;
+            self.filter_open = false;
+        } else if self.autolabel.model_open || self.autolabel.reasoning_open {
+            self.autolabel.model_open = false;
+            self.autolabel.reasoning_open = false;
+        } else if matches!(self.modal, Some(Modal::EditClass | Modal::Alert { .. } | Modal::Confirm { .. })) {
+            self.modal = None;
+            self.show_next_queued_alert(cx);
+        } else if self.help_visible {
+            self.help_visible = false;
+        } else if self.validation_visible {
+            self.validation_visible = false;
+        } else {
+            let state = app_state_mut(cx);
+            state.current_class_index = -1;
+            state.clear_preview();
+        }
         cx.notify();
     }
 
@@ -1274,8 +1266,7 @@ impl Workspace {
         if self.task_running {
             return;
         }
-        self.task_running = true;
-        self.modal = Some(Modal::Progress {
+        self.begin_task(Modal::Progress {
             title: "Updating Classes".into(),
             label: "Starting…".into(),
             current: 0,
@@ -1340,11 +1331,10 @@ impl Workspace {
                     ws.finish_class_changes(new_classes_for_done, backup_dir, updated, cx);
                 }
                 Err(msg) => {
+                    ws.end_task(cx);
                     ws.alert("Error", msg);
-                    ws.task_running = false;
-                    cx.notify();
                 }
-                _ => {}
+                _ => ws.end_task(cx),
             }),
         );
     }
@@ -1356,10 +1346,7 @@ impl Workspace {
         updated: usize,
         cx: &mut Context<Self>,
     ) {
-        if let Some(Modal::Progress { .. }) = self.modal {
-            self.modal = None;
-        }
-        self.task_running = false;
+        self.end_task(cx);
         {
             let state = app_state_mut(cx);
             classes::save_classes(&paths::classes_file(), &new_classes).ok();
@@ -1445,8 +1432,7 @@ impl Workspace {
                     return;
                 }
                 let txt_files = txt_files.to_vec();
-                ws.task_running = true;
-                ws.modal = Some(Modal::Progress {
+                ws.begin_task(Modal::Progress {
                     title: "Batch Replacing".into(),
                     label: "Starting…".into(),
                     current: 0,
@@ -1491,15 +1477,15 @@ impl Workspace {
                 ws.pump_task_messages(rx, cx, Box::new(move |ws, result, cx| {
                     match result {
                         Ok(TaskValue::BatchReplace { backup_dir, updated }) => {
-                            if let Some(Modal::Progress { .. }) = ws.modal {
-                                ws.modal = None;
-                            }
-                            ws.task_running = false;
+                            ws.end_task(cx);
                             // In-memory remap so autosave can't clobber the change.
                             let state = app_state_mut(cx);
                             let old_id_v = old_id;
                             let new_id_v = new_id;
-                            for b in &mut state.boxes {
+                            // `saved_boxes` mirrors disk, which now has the new
+                            // id too; remapping only `boxes` made the image look
+                            // dirty and prompted a needless Save/Discard.
+                            for b in state.boxes.iter_mut().chain(state.saved_boxes.iter_mut()) {
                                 if b.class_id == old_id_v {
                                     b.class_id = new_id_v;
                                 }
@@ -1514,11 +1500,10 @@ impl Workspace {
                             cx.notify();
                         }
                         Err(msg) => {
+                            ws.end_task(cx);
                             ws.alert("Error", msg);
-                            ws.task_running = false;
-                            cx.notify();
                         }
-                        _ => {}
+                        _ => ws.end_task(cx),
                     }
                 }));
             }),
@@ -1571,13 +1556,7 @@ impl Workspace {
                     }
                     Err(std_mpsc::TryRecvError::Disconnected) => {
                         let _ = cx.update(|cx| {
-                            ws.update(cx, |ws, cx| {
-                                ws.task_running = false;
-                                if let Some(Modal::Progress { .. }) = ws.modal {
-                                    ws.modal = None;
-                                }
-                                cx.notify();
-                            });
+                            ws.update(cx, |ws, cx| ws.end_task(cx));
                         });
                         return;
                     }

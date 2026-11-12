@@ -128,6 +128,11 @@ pub enum Corner {
     Se,
 }
 
+/// Pointer gesture in progress. Left-button gestures (Drawing / Moving /
+/// Resizing) and the right-button Panning gesture are mutually exclusive: a
+/// right press during a left gesture is ignored. Any image change resets the
+/// gesture (see [`Canvas::request_image`] / [`Canvas::clear_image`]), so a
+/// drag can never carry over onto another image's boxes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Gesture {
     None,
@@ -135,6 +140,39 @@ pub enum Gesture {
     Moving { active: usize, anchor: Point<Pixels> },
     Resizing { index: usize, handle: Corner },
     Panning { last: Point<Pixels> },
+}
+
+impl Gesture {
+    fn is_left_button(&self) -> bool {
+        matches!(self, Gesture::Drawing { .. } | Gesture::Moving { .. } | Gesture::Resizing { .. })
+    }
+}
+
+/// What the canvas is showing. One enum instead of the old
+/// `current: Option<image>` + `loading: Option<path>` pair, which could not
+/// represent a failed decode (it showed "Loading image…" forever) and let a
+/// decode that finished late replace the image the user had moved on to.
+#[derive(Clone)]
+pub enum ImageLoad {
+    /// No image selected.
+    Empty,
+    /// Decoding `path`; only a result for this exact path is applied.
+    Loading { path: PathBuf },
+    Ready { image: Arc<RenderImage> },
+    Failed { path: PathBuf, error: String },
+}
+
+impl ImageLoad {
+    pub fn image(&self) -> Option<Arc<RenderImage>> {
+        match self {
+            ImageLoad::Ready { image, .. } => Some(image.clone()),
+            _ => None,
+        }
+    }
+
+    fn is_loading(&self, path: &PathBuf) -> bool {
+        matches!(self, ImageLoad::Loading { path: p } if p == path)
+    }
 }
 
 /// Emitted to the workspace whenever canvas interactions change app state.
@@ -146,31 +184,25 @@ pub struct CanvasChanged;
 
 pub struct Canvas {
     pub focus: FocusHandle,
-    pub current: Option<Arc<RenderImage>>,
-    pub loading: Option<PathBuf>,
+    pub load: ImageLoad,
     /// Last known viewport size and bounds (updated during element prepaint).
     pub view_size: Size<Pixels>,
     pub view_bounds: Bounds<Pixels>,
     pub gesture: Gesture,
     pub hover: Option<Point<Pixels>>,
     pub pan: Point<Pixels>,
-    /// Deferred image to request once the element has been laid out at least
-    /// once (so fit-to-window math has a real viewport size).
-    pub pending_request: Option<PathBuf>,
 }
 
 impl Canvas {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             focus: cx.focus_handle(),
-            current: None,
-            loading: None,
+            load: ImageLoad::Empty,
             view_size: size(px(1.), px(1.)),
             view_bounds: Bounds::default(),
             gesture: Gesture::None,
             hover: None,
             pan: Point::default(),
-            pending_request: None,
         }
     }
 
@@ -186,13 +218,15 @@ impl Canvas {
     /// Requests an image: cache hit → immediate; otherwise decode in the
     /// background. Updates `AppState.current_image_size` and resets pan.
     pub fn request_image(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if Some(&path) == self.loading.as_ref() {
+        if self.load.is_loading(&path) {
             return;
         }
+        self.gesture = Gesture::None;
         if let Some(hit) = crate::images::ImageStore::full_cached(cx, &path) {
+            // Anything still queued for the previous image is now moot.
+            crate::images::Lane::Current.supersede();
             let size = hit.size(0);
-            self.current = Some(hit);
-            self.loading = None;
+            self.load = ImageLoad::Ready { image: hit };
             self.pan = Point::default();
             app_state_mut(cx).current_image_size =
                 Some((size.width.0 as u32, size.height.0 as u32));
@@ -200,25 +234,42 @@ impl Canvas {
             cx.emit(CanvasChanged);
             return;
         }
-        self.current = None;
-        self.loading = Some(path.clone());
+        self.load = ImageLoad::Loading { path: path.clone() };
         self.pan = Point::default();
         let entity = cx.entity();
-        crate::images::load_full(cx, path, entity, |canvas, (path, result), cx| match result {
-            Ok((image, dims)) => {
-                crate::images::ImageStore::cache_full(cx, &path, image.clone());
-                canvas.current = Some(image);
-                canvas.loading = None;
-                app_state_mut(cx).current_image_size = Some(dims);
-                cx.emit(CanvasChanged);
+        crate::images::load_full(cx, path, entity, |canvas, (path, result), cx| {
+            // The user navigated on while this decode was already running:
+            // keep the pixels for later, but don't show them over the image
+            // the rest of the app now considers current.
+            if !canvas.load.is_loading(&path) {
+                if let Ok((image, _)) = result {
+                    crate::images::ImageStore::cache_full(cx, &path, image);
+                }
+                return;
             }
-            Err(_err) => {
-                canvas.current = None;
-                canvas.loading = None;
-                app_state_mut(cx).current_image_size = None;
-                cx.emit(CanvasChanged);
+            match result {
+                Ok((image, dims)) => {
+                    crate::images::ImageStore::cache_full(cx, &path, image.clone());
+                    canvas.load = ImageLoad::Ready { image };
+                    app_state_mut(cx).current_image_size = Some(dims);
+                }
+                Err(error) => {
+                    canvas.load = ImageLoad::Failed { path, error };
+                    app_state_mut(cx).current_image_size = None;
+                }
             }
+            cx.emit(CanvasChanged);
+            cx.notify();
         });
+        cx.notify();
+    }
+
+    /// Shows nothing (no image selected). Any decode still in flight is
+    /// ignored when it lands.
+    pub fn clear_image(&mut self, cx: &mut Context<Self>) {
+        crate::images::Lane::Current.supersede();
+        self.load = ImageLoad::Empty;
+        self.gesture = Gesture::None;
         cx.notify();
     }
 
@@ -324,10 +375,22 @@ impl Canvas {
         cx.emit(CanvasChanged);
     }
 
-    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
         let pos = self.local(event.position);
         self.hover = Some(pos);
         cx.notify(); // crosshair + coords
+
+        // The button was released somewhere we never saw (outside the
+        // window): finish the gesture here instead of letting boxes follow a
+        // pointer with no button held.
+        if self.gesture.is_left_button() && event.pressed_button != Some(MouseButton::Left) {
+            self.finish_left_gesture(event.position, window, cx);
+            return;
+        }
+        if matches!(self.gesture, Gesture::Panning { .. }) && event.pressed_button != Some(MouseButton::Right) {
+            self.gesture = Gesture::None;
+            return;
+        }
 
         let gesture = self.gesture;
         match gesture {
@@ -436,7 +499,7 @@ impl Canvas {
         }
     }
 
-    fn on_mouse_up(&mut self, event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_up(&mut self, event: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
         if event.button == MouseButton::Right {
             if matches!(self.gesture, Gesture::Panning { .. }) {
                 self.gesture = Gesture::None;
@@ -446,9 +509,22 @@ impl Canvas {
         if event.button != MouseButton::Left {
             return;
         }
+        self.finish_left_gesture(event.position, window, cx);
+    }
+
+    /// Release outside the canvas finishes the gesture just like a release
+    /// inside (Tk grabs the pointer during a drag; the draw math clamps to
+    /// the image anyway).
+    fn on_mouse_up_out(&mut self, event: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if event.button == MouseButton::Right || self.gesture.is_left_button() {
+            self.on_mouse_up(event, window, cx);
+        }
+    }
+
+    fn finish_left_gesture(&mut self, position: Point<Pixels>, _window: &mut Window, cx: &mut Context<Self>) {
         match self.gesture {
             Gesture::Drawing { start, .. } => {
-                let pos = self.local(event.position);
+                let pos = self.local(position);
                 let state = app_state_mut(cx);
                 let Some(dims) = state.current_image_size else {
                     self.gesture = Gesture::None;
@@ -511,6 +587,9 @@ impl Canvas {
     }
 
     fn on_right_down(&mut self, event: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.gesture.is_left_button() {
+            return; // finish the left-button gesture first
+        }
         self.gesture = Gesture::Panning {
             last: self.local(event.position),
         };
@@ -607,8 +686,7 @@ impl Render for Canvas {
         let theme = ThemeState::current(cx);
         let state = app_state(cx);
         let has_image = state.current_image_size.is_some();
-        // An image is selected but still decoding: not an empty state.
-        let loading = !has_image && state.current_image_index != -1;
+        let load = self.load.clone();
         let (empty_title, empty_hint) = if state.image_dir.is_empty() {
             ("No image loaded", "Open an image folder to start annotating —")
         } else {
@@ -628,6 +706,8 @@ impl Render for Canvas {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_down))
             .on_mouse_up(MouseButton::Right, cx.listener(Self::on_mouse_up))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up_out))
+            .on_mouse_up_out(MouseButton::Right, cx.listener(Self::on_mouse_up_out))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_scroll_wheel(cx.listener(Self::on_scroll))
             .on_hover(cx.listener(|canvas: &mut Canvas, hovered: &bool, _window, cx| {
@@ -639,19 +719,33 @@ impl Render for Canvas {
                 canvas: canvas_entity,
             });
 
+        let status_overlay = |text: SharedString| {
+            div()
+                .absolute()
+                .size_full()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .items_center()
+                .justify_center()
+                .text_size(px(12.))
+                .text_color(theme.rgba(theme.fg_muted, 0.8))
+                .child(text)
+        };
         if has_image {
             el.into_any_element()
-        } else if loading {
+        } else if let ImageLoad::Loading { .. } = load {
+            el.child(status_overlay("Loading image…".into())).into_any_element()
+        } else if let ImageLoad::Failed { path, error } = load {
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             el.child(
-                div()
-                    .absolute()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(px(12.))
-                    .text_color(theme.rgba(theme.fg_muted, 0.8))
-                    .child("Loading image…"),
+                status_overlay(format!("Couldn't open {name}").into()).child(
+                    div()
+                        .max_w(px(520.))
+                        .text_size(px(11.))
+                        .text_color(theme.rgba(theme.fg_muted, 0.6))
+                        .child(error),
+                ),
             )
             .into_any_element()
         } else {
@@ -756,12 +850,8 @@ impl Element for CanvasElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         self.canvas.update(cx, |canvas, _| {
-            let size_changed = canvas.view_size != bounds.size;
             canvas.view_size = bounds.size;
             canvas.view_bounds = bounds;
-            if size_changed {
-                canvas.pending_request = None;
-            }
         });
     }
 
@@ -787,7 +877,7 @@ impl Element for CanvasElement {
             let dims = state.current_image_size.unwrap_or((0, 0));
             let t = canvas.transform(state);
             (
-                canvas.current.clone(),
+                canvas.load.image(),
                 dims,
                 t,
                 state.boxes.clone(),

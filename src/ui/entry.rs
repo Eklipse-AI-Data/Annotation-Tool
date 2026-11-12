@@ -67,6 +67,10 @@ impl Entry {
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         self.content = text.to_string().into();
         self.selected_range = self.content.len()..self.content.len();
+        // Any IME composition referred to the old text (and could slice it
+        // out of bounds on the next keystroke).
+        self.marked_range = None;
+        self.selection_reversed = false;
         cx.notify();
         cx.emit(EntryChanged);
     }
@@ -356,7 +360,7 @@ impl EntityInputHandler for Entry {
         self.selected_range = new_selected_range_utf16
             .as_ref()
             .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .map(|new_range| new_range.start + range.start..new_range.end + range.end)
+            .map(|new_range| new_range.start + range.start..new_range.end + range.start)
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
         cx.notify();
     }

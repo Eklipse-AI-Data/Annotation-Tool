@@ -58,16 +58,48 @@ const SESSION_PRESET_KEY: &str = "active_class_preset";
 // Model list (shared by the Auto Label tab and Settings → Auto Label)
 // ---------------------------------------------------------------------------
 
+/// Lifecycle of the `GET /models` fetch.
+///
+/// `NotLoaded → Loading → Loaded | Failed`, and `refresh_models` goes back to
+/// `Loading` from any state (keeping the last list visible meanwhile).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ModelFetch {
+    #[default]
+    NotLoaded,
+    Loading,
+    Loaded,
+    /// Request failed, or the endpoint listed no usable models.
+    Failed(String),
+}
+
 #[derive(Default)]
 pub struct ModelList {
-    /// Models that can label images, newest-looking first.
+    /// Models that can label images, newest-looking first. Kept while a
+    /// refresh is `Loading`; cleared when a fetch fails.
     pub models: Vec<String>,
-    pub loading: bool,
-    pub loaded: bool,
-    pub error: Option<String>,
+    pub fetch: ModelFetch,
+    /// Bumped per request so only the latest request's result is applied.
     generation: u64,
 }
 impl gpui::Global for ModelList {}
+
+impl ModelList {
+    pub fn is_loading(&self) -> bool {
+        self.fetch == ModelFetch::Loading
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        match &self.fetch {
+            ModelFetch::Failed(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    /// Never fetched, or the last fetch failed (worth trying again).
+    pub fn needs_fetch(&self) -> bool {
+        matches!(self.fetch, ModelFetch::NotLoaded | ModelFetch::Failed(_))
+    }
+}
 
 pub fn model_list(cx: &App) -> Option<&ModelList> {
     cx.try_global::<ModelList>()
@@ -78,7 +110,7 @@ pub fn model_list(cx: &App) -> Option<&ModelList> {
 pub fn refresh_models(settings: AutoLabelSettings, cx: &mut App) {
     let generation = {
         let list = cx.default_global::<ModelList>();
-        list.loading = true;
+        list.fetch = ModelFetch::Loading;
         list.generation += 1;
         list.generation
     };
@@ -109,17 +141,19 @@ pub fn refresh_models(settings: AutoLabelSettings, cx: &mut App) {
             if list.generation != generation {
                 return;
             }
-            list.loading = false;
-            list.loaded = true;
             match result {
+                Ok(models) if models.is_empty() => {
+                    list.fetch = ModelFetch::Failed(
+                        "No models listed. Sign in to Codex in Settings → Auto Label.".to_string(),
+                    );
+                    list.models.clear();
+                }
                 Ok(models) => {
-                    list.error = models
-                        .is_empty()
-                        .then(|| "No models listed. Sign in to Codex in Settings → Auto Label.".to_string());
+                    list.fetch = ModelFetch::Loaded;
                     list.models = models;
                 }
                 Err(e) => {
-                    list.error = Some(e);
+                    list.fetch = ModelFetch::Failed(e);
                     list.models.clear();
                 }
             }
@@ -129,9 +163,10 @@ pub fn refresh_models(settings: AutoLabelSettings, cx: &mut App) {
     .detach();
 }
 
-/// Loads the model list once (if it was never loaded and isn't loading).
+/// Loads the model list if it was never loaded or the last attempt failed
+/// (a failure used to stick until "Refresh list" was clicked).
 pub fn ensure_models(cx: &mut App) {
-    let needed = model_list(cx).is_none_or(|l| !l.loaded && !l.loading);
+    let needed = model_list(cx).is_none_or(|l| l.needs_fetch());
     if needed {
         refresh_models(AutoLabelSettings::from_config(&app_state(cx).config.raw), cx);
     }
@@ -157,7 +192,7 @@ pub fn model_rows<V: 'static>(
     refresh: fn(&mut V, &mut Context<V>),
 ) -> Vec<gpui::AnyElement> {
     let (models, loading, error) = model_list(cx)
-        .map(|l| (l.models.clone(), l.loading, l.error.clone()))
+        .map(|l| (l.models.clone(), l.is_loading(), l.error().map(str::to_string)))
         .unwrap_or_default();
     let mut rows = Vec::new();
     if loading {
@@ -418,7 +453,10 @@ pub struct AutoLabelPanel {
     pub reasoning_open: bool,
     /// Labeling guide of the active preset.
     pub guide: Guide,
-    /// Progress text while a guide import runs.
+    /// Guide import: `None` = idle; `Some(text)` = busy (choosing files,
+    /// then rendering/tagging pages), with the progress text to show. Set as
+    /// soon as the import starts so a second click can't open a second
+    /// picker and run two imports at once.
     pub guide_busy: Option<String>,
 }
 
@@ -755,6 +793,8 @@ impl Workspace {
             return;
         }
         let preset = self.autolabel.preset.clone();
+        self.autolabel.guide_busy = Some("Choosing files…".into());
+        cx.notify();
         cx.spawn(async move |this: gpui::WeakEntity<Workspace>, cx: &mut gpui::AsyncApp| {
             let Some(files) = rfd::AsyncFileDialog::new()
                 .set_title("Import labeling guide (PDF or annotated screenshots)")
@@ -762,6 +802,10 @@ impl Workspace {
                 .pick_files()
                 .await
             else {
+                let _ = this.update(cx, |ws, cx| {
+                    ws.autolabel.guide_busy = None;
+                    cx.notify();
+                });
                 return;
             };
             let sources: Vec<PathBuf> = files.iter().map(|f| f.path().to_path_buf()).collect();
@@ -908,25 +952,35 @@ impl Workspace {
         self.set_status(format!("Auto Label: asking {}…", settings.model), cx);
 
         let (tx, rx) = smol::channel::bounded(1);
+        let worker_path = path.clone();
         std::thread::spawn(move || {
             let result = Labeler::prepare(settings, &library_root(), &preset, targets, &descriptions)
-                .and_then(|labeler| labeler.label(&path));
+                .and_then(|labeler| labeler.label(&worker_path));
             let _ = tx.send_blocking(result);
         });
         let ws = cx.entity();
         cx.spawn(async move |_this: gpui::WeakEntity<Workspace>, cx: &mut gpui::AsyncApp| {
             let result = rx.recv().await.unwrap_or_else(|_| Err("Auto Label worker stopped".into()));
             let _ = cx.update(|cx| {
-                ws.update(cx, |ws, cx| ws.autolabel_test_done(filename, result, cx));
+                ws.update(cx, |ws, cx| ws.autolabel_test_done(filename, path, result, cx));
             });
         })
         .detach();
         cx.notify();
     }
 
-    fn autolabel_test_done(&mut self, filename: String, result: Result<Vec<BBox>, String>, cx: &mut Context<Self>) {
+    fn autolabel_test_done(
+        &mut self,
+        filename: String,
+        path: PathBuf,
+        result: Result<Vec<BBox>, String>,
+        cx: &mut Context<Self>,
+    ) {
         self.autolabel.testing = false;
-        let still_here = Self::current_filename(cx).as_deref() == Some(filename.as_str());
+        // Full path, not just the name: after a folder switch a same-named
+        // image must not receive the old folder's suggestions.
+        let still_here = Self::current_filename(cx)
+            .is_some_and(|name| PathBuf::from(&app_state(cx).image_dir).join(name) == path);
         match result {
             Ok(boxes) if boxes.is_empty() => {
                 let msg = format!("Model found no target classes on {filename}");
@@ -1096,8 +1150,7 @@ impl Workspace {
         };
         let total = candidates.len();
         let cancel = Arc::new(AtomicBool::new(false));
-        self.task_running = true;
-        self.modal = Some(Modal::Progress {
+        self.begin_task(Modal::Progress {
             title: "Auto Labeling".into(),
             label: "Preparing examples…".into(),
             current: 0,
@@ -1207,10 +1260,7 @@ impl Workspace {
         aborted: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        if let Some(Modal::Progress { .. }) = self.modal {
-            self.modal = None;
-        }
-        self.task_running = false;
+        self.end_task(cx);
         // Reload the current image without autosaving stale in-memory boxes.
         let index = app_state(cx).current_image_index;
         if index != -1 {

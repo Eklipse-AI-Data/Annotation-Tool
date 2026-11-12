@@ -277,6 +277,9 @@ impl SettingsView {
         let Some(target) = self.capture_target else {
             return;
         };
+        // While capturing, the keystroke belongs to the capture: don't let
+        // it bubble to the workspace (Escape would close Settings).
+        cx.stop_propagation();
         let key = &event.keystroke.key;
         let m = &event.keystroke.modifiers;
         // Ignore bare modifier presses (Python parity).
@@ -293,6 +296,11 @@ impl SettingsView {
         }
         if let Some(pattern) = gpui_to_tk(m.control, m.alt, m.shift, m.secondary(), key) {
             app_state_mut(cx).config.set_binding(target, &pattern);
+            // Keep the live keymap in step with the config it is built from
+            // (it used to change only on "Save", while the edited config
+            // could already be persisted by any other `config.save()`).
+            let cfg = app_state(cx).config.clone();
+            crate::actions::apply_keymap(cx, &cfg);
         }
         self.capture_target = None;
         cx.notify();
@@ -413,6 +421,7 @@ impl Render for SettingsView {
             .max_h(window.viewport_size().height - px(40.))
             .flex_col()
             .overflow_hidden()
+            .key_context(crate::actions::SETTINGS_CONTEXT)
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_capture_key))
             .child(header)
@@ -1131,7 +1140,7 @@ impl SettingsView {
                 if !view.popover_just_closed() {
                     view.auto_label.model_open = !view.auto_label.model_open;
                     view.auto_label.reasoning_open = false;
-                    let empty = super::autolabel_ui::model_list(cx).is_none_or(|l| !l.loaded && !l.loading);
+                    let empty = super::autolabel_ui::model_list(cx).is_none_or(|l| l.needs_fetch());
                     if view.auto_label.model_open && empty {
                         view.test_auto_label_connection(cx);
                     }
@@ -1193,14 +1202,15 @@ impl SettingsView {
                 })));
         }
 
+        use super::autolabel_ui::ModelFetch;
         let (loading, status): (bool, Option<(bool, String)>) = match super::autolabel_ui::model_list(cx) {
-            Some(l) if l.loading => (true, Some((false, "Loading models…".to_string()))),
-            Some(l) => match &l.error {
-                Some(e) => (false, Some((true, e.clone()))),
-                None if l.loaded => (false, Some((false, format!("Connected: {} model(s) can label images.", l.models.len())))),
-                None => (false, None),
-            },
             None => (false, None),
+            Some(l) => match &l.fetch {
+                ModelFetch::NotLoaded => (false, None),
+                ModelFetch::Loading => (true, Some((false, "Loading models…".to_string()))),
+                ModelFetch::Loaded => (false, Some((false, format!("Connected: {} model(s) can label images.", l.models.len())))),
+                ModelFetch::Failed(e) => (false, Some((true, e.clone()))),
+            },
         };
         let testing = loading;
         let f = &self.auto_label;
